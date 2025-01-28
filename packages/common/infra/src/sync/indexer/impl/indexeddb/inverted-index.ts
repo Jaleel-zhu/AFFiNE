@@ -21,7 +21,11 @@ export interface InvertedIndex {
 }
 
 export class StringInvertedIndex implements InvertedIndex {
-  constructor(readonly fieldKey: string) {}
+  constructor(
+    readonly fieldKey: string,
+    readonly index: boolean = true,
+    readonly store: boolean = true
+  ) {}
 
   async match(trx: DataStructROTransaction, term: string): Promise<Match> {
     const objs = await trx
@@ -60,7 +64,7 @@ export class StringInvertedIndex implements InvertedIndex {
 
   async insert(trx: DataStructRWTransaction, id: number, terms: string[]) {
     for (const term of terms) {
-      await trx.objectStore('invertedIndex').add({
+      await trx.objectStore('invertedIndex').put({
         key: InvertedIndexKey.forString(this.fieldKey, term).buffer(),
         nid: id,
       });
@@ -69,7 +73,11 @@ export class StringInvertedIndex implements InvertedIndex {
 }
 
 export class IntegerInvertedIndex implements InvertedIndex {
-  constructor(readonly fieldKey: string) {}
+  constructor(
+    readonly fieldKey: string,
+    readonly index: boolean = true,
+    readonly store: boolean = true
+  ) {}
 
   async match(trx: DataStructROTransaction, term: string): Promise<Match> {
     const objs = await trx
@@ -109,7 +117,7 @@ export class IntegerInvertedIndex implements InvertedIndex {
 
   async insert(trx: DataStructRWTransaction, id: number, terms: string[]) {
     for (const term of terms) {
-      await trx.objectStore('invertedIndex').add({
+      await trx.objectStore('invertedIndex').put({
         key: InvertedIndexKey.forInt64(this.fieldKey, BigInt(term)).buffer(),
         nid: id,
       });
@@ -118,7 +126,11 @@ export class IntegerInvertedIndex implements InvertedIndex {
 }
 
 export class BooleanInvertedIndex implements InvertedIndex {
-  constructor(readonly fieldKey: string) {}
+  constructor(
+    readonly fieldKey: string,
+    readonly index: boolean = true,
+    readonly store: boolean = true
+  ) {}
 
   // eslint-disable-next-line sonarjs/no-identical-functions
   async all(trx: DataStructROTransaction): Promise<Match> {
@@ -160,7 +172,7 @@ export class BooleanInvertedIndex implements InvertedIndex {
 
   async insert(trx: DataStructRWTransaction, id: number, terms: string[]) {
     for (const term of terms) {
-      await trx.objectStore('invertedIndex').add({
+      await trx.objectStore('invertedIndex').put({
         key: InvertedIndexKey.forBoolean(
           this.fieldKey,
           term === 'true'
@@ -172,17 +184,30 @@ export class BooleanInvertedIndex implements InvertedIndex {
 }
 
 export class FullTextInvertedIndex implements InvertedIndex {
-  constructor(readonly fieldKey: string) {}
+  constructor(
+    readonly fieldKey: string,
+    readonly index: boolean = true,
+    readonly store: boolean = true
+  ) {}
 
   async match(trx: DataStructROTransaction, term: string): Promise<Match> {
     const queryTokens = new GeneralTokenizer().tokenize(term);
     const matched = new Map<
       number,
-      {
-        score: number[];
-        positions: Map<number, [number, number][]>;
-      }
+      Map<
+        number, // index
+        {
+          score: number;
+          ranges: [number, number][];
+        }
+      >
     >();
+    const avgFieldLength =
+      (
+        await trx
+          .objectStore('kvMetadata')
+          .get(`full-text:avg-field-length:${this.fieldKey}`)
+      )?.value ?? 0;
     for (const token of queryTokens) {
       const key = InvertedIndexKey.forString(this.fieldKey, token.term);
       const objs = await trx
@@ -210,12 +235,6 @@ export class FullTextInvertedIndex implements InvertedIndex {
         };
         const termFreq = position.rs.length;
         const totalCount = objs.length;
-        const avgFieldLength =
-          (
-            await trx
-              .objectStore('kvMetadata')
-              .get(`full-text:avg-field-length:${this.fieldKey}`)
-          )?.value ?? 0;
         const fieldLength = position.l;
         const score =
           bm25(termFreq, 1, totalCount, fieldLength, avgFieldLength) *
@@ -244,30 +263,48 @@ export class FullTextInvertedIndex implements InvertedIndex {
 
       // normalize score
       const maxScore = submatched.reduce((acc, s) => Math.max(acc, s.score), 0);
-      const minScore = submatched.reduce((acc, s) => Math.min(acc, s.score), 1);
+      const minScore = submatched.reduce((acc, s) => Math.min(acc, s.score), 0);
       for (const { nid, score, position } of submatched) {
-        const normalizedScore = (score - minScore) / (maxScore - minScore);
-        const match = matched.get(nid) || {
-          score: [] as number[],
-          positions: new Map(),
+        const normalizedScore =
+          maxScore === minScore
+            ? score
+            : (score - minScore) / (maxScore - minScore);
+        const match =
+          matched.get(nid) ??
+          new Map<
+            number, // index
+            {
+              score: number;
+              ranges: [number, number][];
+            }
+          >();
+        const item = match.get(position.index) || {
+          score: 0,
+          ranges: [],
         };
-        match.score.push(normalizedScore);
-        const ranges = match.positions.get(position.index) || [];
-        ranges.push(...position.ranges);
-        match.positions.set(position.index, ranges);
+        item.score += normalizedScore;
+        item.ranges.push(...position.ranges);
+        match.set(position.index, item);
         matched.set(nid, match);
       }
     }
     const match = new Match();
-    for (const [nid, { score, positions }] of matched) {
-      match.addScore(
-        nid,
-        score.reduce((acc, s) => acc + s, 0)
-      );
-
-      for (const [index, ranges] of positions) {
-        match.addHighlighter(nid, this.fieldKey, index, ranges);
+    for (const [nid, items] of matched) {
+      if (items.size === 0) {
+        break;
       }
+      let highestScore = -1;
+      let highestIndex = -1;
+      let highestRanges: [number, number][] = [];
+      for (const [index, { score, ranges }] of items) {
+        if (score > highestScore) {
+          highestScore = score;
+          highestIndex = index;
+          highestRanges = ranges;
+        }
+      }
+      match.addScore(nid, highestScore);
+      match.addHighlighter(nid, this.fieldKey, highestIndex, highestRanges);
     }
     return match;
   }
@@ -310,7 +347,7 @@ export class FullTextInvertedIndex implements InvertedIndex {
       }
 
       for (const [term, tokens] of tokenMap) {
-        await trx.objectStore('invertedIndex').add({
+        await trx.objectStore('invertedIndex').put({
           key: InvertedIndexKey.forString(this.fieldKey, term).buffer(),
           nid: id,
           pos: {
@@ -349,9 +386,9 @@ export class FullTextInvertedIndex implements InvertedIndex {
 
 export class InvertedIndexKey {
   constructor(
-    readonly field: ArrayBuffer,
-    readonly value: ArrayBuffer,
-    readonly gap: ArrayBuffer = new Uint8Array([58])
+    readonly field: Uint8Array,
+    readonly value: Uint8Array,
+    readonly gap: Uint8Array = new Uint8Array([58])
   ) {}
 
   asString() {
@@ -359,7 +396,10 @@ export class InvertedIndexKey {
   }
 
   asInt64() {
-    return new DataView(this.value).getBigInt64(0, false); /* big-endian */
+    return new DataView(this.value.buffer).getBigInt64(
+      0,
+      false
+    ); /* big-endian */
   }
 
   add1() {
@@ -375,7 +415,7 @@ export class InvertedIndexKey {
     } else {
       return new InvertedIndexKey(
         this.field,
-        new ArrayBuffer(0),
+        new Uint8Array(0),
         new Uint8Array([59])
       );
     }
@@ -384,7 +424,7 @@ export class InvertedIndexKey {
   static forPrefix(field: string) {
     return new InvertedIndexKey(
       new TextEncoder().encode(field),
-      new ArrayBuffer(0)
+      new Uint8Array(0)
     );
   }
 
@@ -402,8 +442,8 @@ export class InvertedIndexKey {
   }
 
   static forInt64(field: string, value: bigint) {
-    const bytes = new ArrayBuffer(8);
-    new DataView(bytes).setBigInt64(0, value, false); /* big-endian */
+    const bytes = new Uint8Array(8);
+    new DataView(bytes.buffer).setBigInt64(0, value, false); /* big-endian */
     return new InvertedIndexKey(new TextEncoder().encode(field), bytes);
   }
 

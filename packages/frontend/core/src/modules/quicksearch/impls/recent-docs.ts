@@ -1,7 +1,7 @@
 import { Entity, LiveData } from '@toeverything/infra';
 
+import type { DocDisplayMetaService } from '../../doc-display-meta';
 import type { QuickSearchSession } from '../providers/quick-search-provider';
-import type { DocDisplayMetaService } from '../services/doc-display-meta';
 import type { RecentDocsService } from '../services/recent-pages';
 import type { QuickSearchGroup } from '../types/group';
 import type { QuickSearchItem } from '../types/item';
@@ -9,7 +9,7 @@ import type { QuickSearchItem } from '../types/item';
 const group = {
   id: 'recent-docs',
   label: {
-    key: 'com.affine.cmdk.affine.category.affine.recent',
+    i18nKey: 'com.affine.cmdk.affine.category.affine.recent',
   },
   score: 15,
 } as QuickSearchGroup;
@@ -37,8 +37,9 @@ export class RecentDocsQuickSearchSession
 
       const docRecords = this.recentDocsService.getRecentDocs();
 
-      return docRecords.map<QuickSearchItem<'recent-doc', { docId: string }>>(
-        docRecord => {
+      return docRecords
+        .filter(doc => !get(doc.trash$))
+        .map<QuickSearchItem<'recent-doc', { docId: string }>>(docRecord => {
           const { title, icon } =
             this.docDisplayMetaService.getDocDisplayMeta(docRecord);
 
@@ -54,8 +55,7 @@ export class RecentDocsQuickSearchSession
             timestamp: docRecord.meta$.value.updatedDate,
             payload: { docId: docRecord.id },
           };
-        }
-      );
+        });
     });
 
   query(query: string) {

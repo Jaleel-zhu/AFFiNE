@@ -1,12 +1,11 @@
 import { Button, IconButton, Modal } from '@affine/component';
-import { openSettingModalAtom } from '@affine/core/atoms';
-import { useBlurRoot } from '@affine/core/hooks/use-blur-root';
+import { useBlurRoot } from '@affine/core/components/hooks/use-blur-root';
 import { AuthService, SubscriptionService } from '@affine/core/modules/cloud';
-import { mixpanel } from '@affine/core/utils';
+import { WorkspaceDialogService } from '@affine/core/modules/dialogs';
 import { Trans, useI18n } from '@affine/i18n';
+import { track } from '@affine/track';
 import { ArrowLeftSmallIcon } from '@blocksuite/icons/rc';
-import { useLiveData, useServices } from '@toeverything/infra';
-import { useAtom } from 'jotai';
+import { useLiveData, useService, useServices } from '@toeverything/infra';
 import type { ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
@@ -96,8 +95,8 @@ export const AIOnboardingGeneral = () => {
   const aiSubscription = useLiveData(subscriptionService.subscription.ai$);
   const [index, setIndex] = useState(0);
   const list = useMemo(() => getPlayList(t), [t]);
-  const [settingModal, setSettingModal] = useAtom(openSettingModalAtom);
-  const readyToOpen = isLoggedIn && !settingModal.open;
+  const workspaceDialogService = useService(WorkspaceDialogService);
+  const readyToOpen = isLoggedIn;
   useBlurRoot(open && readyToOpen);
 
   const isFirst = index === 0;
@@ -111,18 +110,13 @@ export const AIOnboardingGeneral = () => {
     toggleGeneralAIOnboarding(false);
   }, []);
   const goToPricingPlans = useCallback(() => {
-    setSettingModal({
-      open: true,
+    workspaceDialogService.open('setting', {
       activeTab: 'plans',
       scrollAnchor: 'aiPricingPlan',
     });
-    mixpanel.track('PlansViewed', {
-      page: 'whiteboard-editor',
-      segment: 'ai onboarding',
-      module: 'general',
-    });
+    track.$.aiOnboarding.dialog.viewPlans();
     closeAndDismiss();
-  }, [closeAndDismiss, setSettingModal]);
+  }, [closeAndDismiss, workspaceDialogService]);
   const onPrev = useCallback(() => {
     setIndex(i => Math.max(0, i - 1));
   }, []);
@@ -243,36 +237,26 @@ export const AIOnboardingGeneral = () => {
         >
           {isLast ? (
             <>
-              <IconButton
-                size="default"
-                icon={<ArrowLeftSmallIcon width={20} height={20} />}
-                onClick={onPrev}
-                type="plain"
-                className={styles.baseActionButton}
-              />
+              <IconButton size="20" onClick={onPrev}>
+                <ArrowLeftSmallIcon />
+              </IconButton>
               {aiSubscription ? (
                 <Button
-                  className={styles.baseActionButton}
                   size="large"
                   onClick={closeAndDismiss}
-                  type="primary"
+                  variant="primary"
                 >
                   {t['com.affine.ai-onboarding.general.get-started']()}
                 </Button>
               ) : (
                 <div className={styles.subscribeActions}>
-                  <Button
-                    className={styles.baseActionButton}
-                    size="large"
-                    onClick={goToPricingPlans}
-                  >
+                  <Button size="large" onClick={goToPricingPlans}>
                     {t['com.affine.ai-onboarding.general.purchase']()}
                   </Button>
                   <Button
-                    className={styles.baseActionButton}
                     size="large"
                     onClick={closeAndDismiss}
-                    type="primary"
+                    variant="primary"
                   >
                     {t['com.affine.ai-onboarding.general.try-for-free']()}
                   </Button>
@@ -282,21 +266,15 @@ export const AIOnboardingGeneral = () => {
           ) : (
             <>
               {isFirst ? (
-                <Button
-                  className={styles.transparentActionButton}
-                  onClick={remindLater}
-                  size="large"
-                  type="default"
-                >
+                <Button onClick={remindLater} size="large">
                   {t['com.affine.ai-onboarding.general.skip']()}
                 </Button>
               ) : (
                 <Button
-                  icon={<ArrowLeftSmallIcon />}
-                  className={styles.baseActionButton}
+                  prefix={<ArrowLeftSmallIcon />}
                   onClick={onPrev}
-                  type="plain"
                   size="large"
+                  variant="plain"
                 >
                   {t['com.affine.ai-onboarding.general.prev']()}
                 </Button>
@@ -305,12 +283,7 @@ export const AIOnboardingGeneral = () => {
                 <div>
                   {index + 1} / {list.length}
                 </div>
-                <Button
-                  className={styles.baseActionButton}
-                  size="large"
-                  type="primary"
-                  onClick={onNext}
-                >
+                <Button size="large" variant="primary" onClick={onNext}>
                   {t['com.affine.ai-onboarding.general.next']()}
                 </Button>
               </div>

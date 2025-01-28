@@ -14,26 +14,31 @@ import {
   concatMap,
   connect,
   EMPTY,
+  finalize,
   from,
+  interval,
   map,
   merge,
   mergeMap,
   Observable,
+  Subject,
   switchMap,
+  takeUntil,
   toArray,
 } from 'rxjs';
 
-import { Public } from '../../core/auth';
-import { CurrentUser } from '../../core/auth/current-user';
 import {
   BlobNotFound,
+  CallMetric,
   Config,
   CopilotFailedToGenerateText,
   CopilotSessionNotFound,
   mapSseError,
+  metrics,
   NoCopilotProviderAvailable,
   UnsplashIsNotConfigured,
-} from '../../fundamentals';
+} from '../../base';
+import { CurrentUser, Public } from '../../core/auth';
 import { CopilotProviderService } from './providers';
 import { ChatSession, ChatSessionService } from './session';
 import { CopilotStorage } from './storage';
@@ -41,7 +46,7 @@ import { CopilotCapability, CopilotTextProvider } from './types';
 import { CopilotWorkflowService, GraphExecutorState } from './workflow';
 
 export interface ChatEvent {
-  type: 'event' | 'attachment' | 'message' | 'error';
+  type: 'event' | 'attachment' | 'message' | 'error' | 'ping';
   id?: string;
   data: string | object;
 }
@@ -50,6 +55,8 @@ type CheckResult = {
   model: string | undefined;
   hasAttachment?: boolean;
 };
+
+const PING_INTERVAL = 5000;
 
 @Controller('/api/copilot')
 export class CopilotController {
@@ -159,7 +166,21 @@ export class CopilotController {
     return num;
   }
 
+  private mergePingStream(
+    messageId: string,
+    source$: Observable<ChatEvent>
+  ): Observable<ChatEvent> {
+    const subject$ = new Subject();
+    const ping$ = interval(PING_INTERVAL).pipe(
+      map(() => ({ type: 'ping' as const, id: messageId, data: '' })),
+      takeUntil(subject$)
+    );
+
+    return merge(source$.pipe(finalize(() => subject$.next(null))), ping$);
+  }
+
   @Get('/chat/:sessionId')
+  @CallMetric('ai', 'chat', { timer: true })
   async chat(
     @CurrentUser() user: CurrentUser,
     @Req() req: Request,
@@ -167,6 +188,7 @@ export class CopilotController {
     @Query() params: Record<string, string | string[]>
   ): Promise<string> {
     const { messageId } = this.prepareParams(params);
+
     const provider = await this.chooseTextProvider(
       user.id,
       sessionId,
@@ -174,8 +196,8 @@ export class CopilotController {
     );
 
     const session = await this.appendSessionMessage(sessionId, messageId);
-
     try {
+      metrics.ai.counter('chat_calls').add(1, { model: session.model });
       const content = await provider.generateText(
         session.finish(params),
         session.model,
@@ -195,28 +217,31 @@ export class CopilotController {
 
       return content;
     } catch (e: any) {
+      metrics.ai.counter('chat_errors').add(1, { model: session.model });
       throw new CopilotFailedToGenerateText(e.message);
     }
   }
 
   @Sse('/chat/:sessionId/stream')
+  @CallMetric('ai', 'chat_stream', { timer: true })
   async chatStream(
     @CurrentUser() user: CurrentUser,
     @Req() req: Request,
     @Param('sessionId') sessionId: string,
     @Query() params: Record<string, string>
   ): Promise<Observable<ChatEvent>> {
+    const { messageId } = this.prepareParams(params);
+
+    const provider = await this.chooseTextProvider(
+      user.id,
+      sessionId,
+      messageId
+    );
+
+    const session = await this.appendSessionMessage(sessionId, messageId);
     try {
-      const { messageId } = this.prepareParams(params);
-      const provider = await this.chooseTextProvider(
-        user.id,
-        sessionId,
-        messageId
-      );
-
-      const session = await this.appendSessionMessage(sessionId, messageId);
-
-      return from(
+      metrics.ai.counter('chat_stream_calls').add(1, { model: session.model });
+      const source$ = from(
         provider.generateTextStream(session.finish(params), session.model, {
           ...session.config.promptConfig,
           signal: this.getSignal(req),
@@ -244,33 +269,45 @@ export class CopilotController {
             )
           )
         ),
-        catchError(mapSseError)
+        catchError(e => {
+          metrics.ai
+            .counter('chat_stream_errors')
+            .add(1, { model: session.model });
+          return mapSseError(e);
+        })
       );
+
+      return this.mergePingStream(messageId, source$);
     } catch (err) {
+      metrics.ai.counter('chat_stream_errors').add(1, { model: session.model });
       return mapSseError(err);
     }
   }
 
   @Sse('/chat/:sessionId/workflow')
+  @CallMetric('ai', 'chat_workflow', { timer: true })
   async chatWorkflow(
     @CurrentUser() user: CurrentUser,
     @Req() req: Request,
     @Param('sessionId') sessionId: string,
     @Query() params: Record<string, string>
   ): Promise<Observable<ChatEvent>> {
+    const { messageId } = this.prepareParams(params);
+
+    const session = await this.appendSessionMessage(sessionId, messageId);
     try {
-      const { messageId } = this.prepareParams(params);
-      const session = await this.appendSessionMessage(sessionId, messageId);
+      metrics.ai.counter('workflow_calls').add(1, { model: session.model });
       const latestMessage = session.stashMessages.findLast(
         m => m.role === 'user'
       );
       if (latestMessage) {
         params = Object.assign({}, params, latestMessage.params, {
           content: latestMessage.content,
+          attachments: latestMessage.attachments,
         });
       }
 
-      return from(
+      const source$ = from(
         this.workflow.runGraph(params, session.model, {
           ...session.config.promptConfig,
           signal: this.getSignal(req),
@@ -281,14 +318,22 @@ export class CopilotController {
           merge(
             // actual chat event stream
             shared$.pipe(
-              map(data =>
-                data.status === GraphExecutorState.EmitContent
-                  ? {
+              map(data => {
+                switch (data.status) {
+                  case GraphExecutorState.EmitContent:
+                    return {
                       type: 'message' as const,
                       id: messageId,
                       data: data.content,
-                    }
-                  : {
+                    };
+                  case GraphExecutorState.EmitAttachment:
+                    return {
+                      type: 'attachment' as const,
+                      id: messageId,
+                      data: data.attachment,
+                    };
+                  default:
+                    return {
                       type: 'event' as const,
                       id: messageId,
                       data: {
@@ -296,8 +341,9 @@ export class CopilotController {
                         id: data.node.id,
                         type: data.node.config.nodeType,
                       } as any,
-                    }
-              )
+                    };
+                }
+              })
             ),
             // save the generated text to the session
             shared$.pipe(
@@ -305,7 +351,10 @@ export class CopilotController {
               concatMap(values => {
                 session.push({
                   role: 'assistant',
-                  content: values.join(''),
+                  content: values
+                    .filter(v => v.status === GraphExecutorState.EmitContent)
+                    .map(v => v.content)
+                    .join(''),
                   createdAt: new Date(),
                 });
                 return from(session.save());
@@ -314,47 +363,60 @@ export class CopilotController {
             )
           )
         ),
-        catchError(mapSseError)
+        catchError(e => {
+          metrics.ai
+            .counter('workflow_errors')
+            .add(1, { model: session.model });
+          return mapSseError(e);
+        })
       );
+
+      return this.mergePingStream(messageId, source$);
     } catch (err) {
+      metrics.ai.counter('workflow_errors').add(1, { model: session.model });
       return mapSseError(err);
     }
   }
 
   @Sse('/chat/:sessionId/images')
+  @CallMetric('ai', 'chat_images', { timer: true })
   async chatImagesStream(
     @CurrentUser() user: CurrentUser,
     @Req() req: Request,
     @Param('sessionId') sessionId: string,
     @Query() params: Record<string, string>
   ): Promise<Observable<ChatEvent>> {
+    const { messageId } = this.prepareParams(params);
+
+    const { model, hasAttachment } = await this.checkRequest(
+      user.id,
+      sessionId,
+      messageId
+    );
+    const provider = await this.provider.getProviderByCapability(
+      hasAttachment
+        ? CopilotCapability.ImageToImage
+        : CopilotCapability.TextToImage,
+      model
+    );
+    if (!provider) {
+      throw new NoCopilotProviderAvailable();
+    }
+
+    const session = await this.appendSessionMessage(sessionId, messageId);
     try {
-      const { messageId } = this.prepareParams(params);
-      const { model, hasAttachment } = await this.checkRequest(
-        user.id,
-        sessionId,
-        messageId
-      );
-      const provider = await this.provider.getProviderByCapability(
-        hasAttachment
-          ? CopilotCapability.ImageToImage
-          : CopilotCapability.TextToImage,
-        model
-      );
-      if (!provider) {
-        throw new NoCopilotProviderAvailable();
-      }
-
-      const session = await this.appendSessionMessage(sessionId, messageId);
-
+      metrics.ai
+        .counter('images_stream_calls')
+        .add(1, { model: session.model });
       const handleRemoteLink = this.storage.handleRemoteLink.bind(
         this.storage,
         user.id,
         sessionId
       );
 
-      return from(
+      const source$ = from(
         provider.generateImagesStream(session.finish(params), session.model, {
+          ...session.config.promptConfig,
           seed: this.parseNumber(params.seed),
           signal: this.getSignal(req),
           user: user.id,
@@ -387,14 +449,25 @@ export class CopilotController {
             )
           )
         ),
-        catchError(mapSseError)
+        catchError(e => {
+          metrics.ai
+            .counter('images_stream_errors')
+            .add(1, { model: session.model });
+          return mapSseError(e);
+        })
       );
+
+      return this.mergePingStream(messageId, source$);
     } catch (err) {
+      metrics.ai
+        .counter('images_stream_errors')
+        .add(1, { model: session.model });
       return mapSseError(err);
     }
   }
 
   @Get('/unsplash/photos')
+  @CallMetric('ai', 'unsplash')
   async unsplashPhotos(
     @Req() req: Request,
     @Res() res: Response,
@@ -436,7 +509,7 @@ export class CopilotController {
 
     if (!body) {
       throw new BlobNotFound({
-        workspaceId,
+        spaceId: workspaceId,
         blobId: key,
       });
     }

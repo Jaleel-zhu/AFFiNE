@@ -1,12 +1,22 @@
-import { cssVar } from '@toeverything/theme';
-import { style } from '@vanilla-extract/css';
+import { cssVarV2 } from '@toeverything/theme/v2';
+import { globalStyle, style } from '@vanilla-extract/css';
+
+export const root = style({
+  containerType: 'inline-size',
+});
 
 export const editor = style({
   vars: {
-    '--affine-editor-width': '100%',
-    '--affine-editor-side-padding': '160px',
+    '--affine-editor-side-padding': '96px',
   },
   minHeight: '100%',
+});
+
+globalStyle(`[data-full-width-layout="true"] ${editor}`, {
+  vars: {
+    '--affine-editor-width': '100%',
+    '--affine-editor-side-padding': '72px',
+  },
 });
 
 export const affineDocViewport = style({
@@ -15,5 +25,5 @@ export const affineDocViewport = style({
   userSelect: 'none',
   containerName: 'viewport',
   containerType: 'inline-size',
-  background: cssVar('backgroundPrimaryColor'),
+  background: cssVarV2('layer/background/primary'),
 });

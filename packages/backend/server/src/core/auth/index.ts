@@ -6,20 +6,26 @@ import { FeatureModule } from '../features';
 import { QuotaModule } from '../quota';
 import { UserModule } from '../user';
 import { AuthController } from './controller';
-import { AuthGuard } from './guard';
+import { AuthGuard, AuthWebsocketOptionsProvider } from './guard';
+import { AuthCronJob } from './job';
 import { AuthResolver } from './resolver';
 import { AuthService } from './service';
-import { TokenService, TokenType } from './token';
 
 @Module({
   imports: [FeatureModule, UserModule, QuotaModule],
-  providers: [AuthService, AuthResolver, TokenService, AuthGuard],
-  exports: [AuthService, AuthGuard],
+  providers: [
+    AuthService,
+    AuthResolver,
+    AuthGuard,
+    AuthCronJob,
+    AuthWebsocketOptionsProvider,
+  ],
+  exports: [AuthService, AuthGuard, AuthWebsocketOptionsProvider],
   controllers: [AuthController],
 })
 export class AuthModule {}
 
 export * from './guard';
 export { ClientTokenType } from './resolver';
-export { AuthService, TokenService, TokenType };
-export * from './current-user';
+export { AuthService };
+export * from './session';

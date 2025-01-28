@@ -1,5 +1,5 @@
 import { DebugLogger } from '@affine/debug';
-import type { Job, JobQueue, WorkspaceService } from '@toeverything/infra';
+import type { Job, JobQueue } from '@toeverything/infra';
 import {
   Entity,
   IndexedDBIndexStorage,
@@ -9,6 +9,8 @@ import {
 } from '@toeverything/infra';
 import { map } from 'rxjs';
 
+import { WorkspaceDBService } from '../../db';
+import type { WorkspaceLocalState, WorkspaceService } from '../../workspace';
 import { blockIndexSchema, docIndexSchema } from '../schema';
 import { createWorker, type IndexerWorker } from '../worker/out-worker';
 
@@ -20,14 +22,18 @@ export function isEmptyUpdate(binary: Uint8Array) {
 }
 
 const logger = new DebugLogger('crawler');
+const WORKSPACE_DOCS_INDEXER_VERSION_KEY = 'docs-indexer-version';
 
 interface IndexerJobPayload {
   docId: string;
-  storageDocId: string;
 }
 
-// TODO(@eyhn): simplify this, it's too complex
 export class DocsIndexer extends Entity {
+  /**
+   * increase this number to re-index all docs
+   */
+  static INDEXER_VERSION = 17;
+
   private readonly jobQueue: JobQueue<IndexerJobPayload> =
     new IndexedDBJobQueue<IndexerJobPayload>(
       'jq:' + this.workspaceService.workspace.id
@@ -36,7 +42,12 @@ export class DocsIndexer extends Entity {
   private readonly runner = new JobRunner(
     this.jobQueue,
     (jobs, signal) => this.execJob(jobs, signal),
-    () => new Promise<void>(resolve => requestIdleCallback(() => resolve()))
+    () =>
+      new Promise<void>(resolve =>
+        requestIdleCallback(() => resolve(), {
+          timeout: 200,
+        })
+      )
   );
 
   private readonly indexStorage = new IndexedDBIndexStorage(
@@ -62,27 +73,39 @@ export class DocsIndexer extends Entity {
     {}
   );
 
-  constructor(private readonly workspaceService: WorkspaceService) {
+  constructor(
+    private readonly workspaceService: WorkspaceService,
+    private readonly workspaceLocalState: WorkspaceLocalState
+  ) {
     super();
   }
 
   setupListener() {
-    this.workspaceEngine.doc.storage.eventBus.on(event => {
-      if (event.clientId === this.workspaceEngine.doc.clientId) {
-        const docId = normalizeDocId(event.docId);
-
-        this.jobQueue
-          .enqueue([
-            {
-              batchKey: docId,
-              payload: { docId, storageDocId: event.docId },
-            },
-          ])
-          .catch(err => {
-            console.error('Error enqueueing job', err);
-          });
-      }
-    });
+    this.workspaceEngine.doc.storage.connection
+      .waitForConnected()
+      .then(() => {
+        this.disposables.push(
+          this.workspaceEngine.doc.storage.subscribeDocUpdate(updated => {
+            if (WorkspaceDBService.isDBDocId(updated.docId)) {
+              // skip db doc
+              return;
+            }
+            this.jobQueue
+              .enqueue([
+                {
+                  batchKey: updated.docId,
+                  payload: { docId: updated.docId },
+                },
+              ])
+              .catch(err => {
+                console.error('Error enqueueing job', err);
+              });
+          })
+        );
+      })
+      .catch(err => {
+        console.error('Error waiting for doc storage connection', err);
+      });
   }
 
   async execJob(jobs: Job<IndexerJobPayload>[], signal: AbortSignal) {
@@ -90,9 +113,18 @@ export class DocsIndexer extends Entity {
       return;
     }
 
-    // jobs should have the same docId, so we just pick the first one
+    const dbVersion = this.getVersion();
+
+    if (dbVersion > DocsIndexer.INDEXER_VERSION) {
+      // stop if db version is higher then self
+      this.runner.stop();
+      throw new Error('Indexer is outdated');
+    }
+
+    const isUpgrade = dbVersion < DocsIndexer.INDEXER_VERSION;
+
+    // jobs should have the same storage docId, so we just pick the first one
     const docId = jobs[0].payload.docId;
-    const storageDocId = jobs[0].payload.storageDocId;
 
     const worker = await this.ensureWorker(signal);
 
@@ -102,44 +134,30 @@ export class DocsIndexer extends Entity {
     let workerOutput;
 
     if (docId === this.workspaceId) {
-      const rootDocBuffer =
-        await this.workspaceEngine.doc.storage.loadDocFromLocal(
-          this.workspaceId
-        );
-
+      const rootDocBuffer = (
+        await this.workspaceEngine.doc.storage.getDoc(this.workspaceId)
+      )?.bin;
       if (!rootDocBuffer) {
         return;
       }
 
-      const allIndexedDocs = (
-        await this.docIndex.search(
-          {
-            type: 'all',
-          },
-          {
-            pagination: {
-              limit: Number.MAX_SAFE_INTEGER,
-              skip: 0,
-            },
-          }
-        )
-      ).nodes.map(n => n.id);
+      const allIndexedDocs = (await this.docIndex.getAll()).map(d => d.id);
 
       workerOutput = await worker.run({
         type: 'rootDoc',
         allIndexedDocs,
         rootDocBuffer,
+        reindexAll: isUpgrade,
+        rootDocId: this.workspaceId,
       });
     } else {
-      const rootDocBuffer =
-        await this.workspaceEngine.doc.storage.loadDocFromLocal(
-          this.workspaceId
-        );
+      const rootDocBuffer = (
+        await this.workspaceEngine.doc.storage.getDoc(this.workspaceId)
+      )?.bin;
 
       const docBuffer =
-        (await this.workspaceEngine.doc.storage.loadDocFromLocal(
-          storageDocId
-        )) ?? new Uint8Array(0);
+        (await this.workspaceEngine.doc.storage.getDoc(docId))?.bin ??
+        new Uint8Array(0);
 
       if (!rootDocBuffer) {
         return;
@@ -150,6 +168,7 @@ export class DocsIndexer extends Entity {
         docBuffer,
         docId,
         rootDocBuffer,
+        rootDocId: this.workspaceId,
       });
     }
 
@@ -175,7 +194,7 @@ export class DocsIndexer extends Entity {
             }
           );
           for (const block of oldBlocks.nodes) {
-            docIndexWriter.delete(block.id);
+            blockIndexWriter.delete(block.id);
           }
         }
         await blockIndexWriter.commit();
@@ -187,13 +206,13 @@ export class DocsIndexer extends Entity {
         }
         await docIndexWriter.commit();
         const blockIndexWriter = await this.blockIndex.write();
-        for (const { blocks } of workerOutput.addedDoc) {
+        for (const { id, blocks } of workerOutput.addedDoc) {
           // delete old blocks
           const oldBlocks = await blockIndexWriter.search(
             {
               type: 'match',
               field: 'docId',
-              match: docId,
+              match: id,
             },
             {
               pagination: {
@@ -214,11 +233,15 @@ export class DocsIndexer extends Entity {
 
     if (workerOutput.reindexDoc) {
       await this.jobQueue.enqueue(
-        workerOutput.reindexDoc.map(({ docId, storageDocId }) => ({
+        workerOutput.reindexDoc.map(({ docId }) => ({
           batchKey: docId,
-          payload: { docId, storageDocId },
+          payload: { docId },
         }))
       );
+    }
+
+    if (isUpgrade) {
+      this.setVersion();
     }
 
     const duration = performance.now() - startTime;
@@ -229,11 +252,12 @@ export class DocsIndexer extends Entity {
 
   startCrawling() {
     this.runner.start();
+
     this.jobQueue
       .enqueue([
         {
           batchKey: this.workspaceId,
-          payload: { docId: this.workspaceId, storageDocId: this.workspaceId },
+          payload: { docId: this.workspaceId },
         },
       ])
       .catch(err => {
@@ -248,51 +272,30 @@ export class DocsIndexer extends Entity {
     return this.worker;
   }
 
+  getVersion() {
+    const version = this.workspaceLocalState.get<number>(
+      WORKSPACE_DOCS_INDEXER_VERSION_KEY
+    );
+    if (typeof version !== 'number') {
+      return -1;
+    } else {
+      return version;
+    }
+  }
+
+  setVersion(version = DocsIndexer.INDEXER_VERSION) {
+    if (this.getVersion() >= version) {
+      return;
+    }
+    return this.workspaceLocalState.set(
+      WORKSPACE_DOCS_INDEXER_VERSION_KEY,
+      version
+    );
+  }
+
   override dispose(): void {
+    super.dispose();
     this.runner.stop();
-  }
-}
-
-function normalizeDocId(raw: string) {
-  enum DocVariant {
-    Workspace = 'workspace',
-    Page = 'page',
-    Space = 'space',
-    Settings = 'settings',
-    Unknown = 'unknown',
-  }
-
-  try {
-    if (!raw.length) {
-      throw new Error('Invalid Empty Doc ID');
-    }
-
-    let parts = raw.split(':');
-
-    if (parts.length > 3) {
-      // special adapt case `wsId:space:page:pageId`
-      if (parts[1] === DocVariant.Space && parts[2] === DocVariant.Page) {
-        parts = [parts[0], DocVariant.Space, parts[3]];
-      } else {
-        throw new Error(`Invalid format of Doc ID: ${raw}`);
-      }
-    } else if (parts.length === 2) {
-      // `${variant}:${guid}`
-      throw new Error('not supported');
-    } else if (parts.length === 1) {
-      // ${ws} or ${pageId}
-      parts = ['', DocVariant.Unknown, parts[0]];
-    }
-
-    const docId = parts.at(2);
-
-    if (!docId) {
-      throw new Error('ID is required');
-    }
-
-    return docId;
-  } catch (err) {
-    logger.error('Error on normalize docId ' + raw, err);
-    return raw;
+    this.worker?.dispose();
   }
 }

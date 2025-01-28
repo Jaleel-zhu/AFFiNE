@@ -1,5 +1,8 @@
-import type { EditorHost } from '@blocksuite/block-std';
-import type { BlockModel } from '@blocksuite/store';
+import type { getCopilotHistoriesQuery, RequestOptions } from '@affine/graphql';
+import type { EditorHost } from '@blocksuite/affine/block-std';
+import type { BlockModel } from '@blocksuite/affine/store';
+
+import type { DocContext } from '../chat-panel/chat-context';
 
 export const translateLangs = [
   'English',
@@ -35,13 +38,8 @@ export const imageProcessingTypes = [
   'Convert to sticker',
 ] as const;
 
-export type CtxRecord = {
-  get(): Record<string, unknown>;
-  set(data: Record<string, unknown>): void;
-};
-
 declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace
+  // oxlint-disable-next-line @typescript-eslint/no-namespace
   namespace BlockSuitePresets {
     type TrackerControl =
       | 'format-bar'
@@ -49,7 +47,11 @@ declare global {
       | 'chat-send'
       | 'block-action-bar';
 
-    type TrackerWhere = 'chat-panel' | 'inline-chat-panel' | 'ai-panel';
+    type TrackerWhere =
+      | 'chat-panel'
+      | 'inline-chat-panel'
+      | 'ai-panel'
+      | 'ai-chat-block';
 
     interface TrackerOptions {
       control: TrackerControl;
@@ -57,6 +59,7 @@ declare global {
     }
 
     interface AITextActionOptions {
+      // user input text
       input?: string;
       stream?: boolean;
       attachments?: (string | File | Blob)[]; // blob could only be strings for the moments (url or data urls)
@@ -69,13 +72,19 @@ declare global {
 
       // internal context
       host: EditorHost;
-      models?: (BlockModel | BlockSuite.SurfaceElementModelType)[];
+      models?: (BlockModel | BlockSuite.SurfaceElementModel)[];
       control: TrackerControl;
       where: TrackerWhere;
     }
 
+    interface AIForkChatSessionOptions {
+      docId: string;
+      workspaceId: string;
+      sessionId: string;
+      latestMessageId: string;
+    }
+
     interface AIImageActionOptions extends AITextActionOptions {
-      content?: string;
       seed?: string;
     }
 
@@ -93,6 +102,13 @@ declare global {
 
     type AIActionTextResponse<T extends AITextActionOptions> =
       T['stream'] extends true ? TextStream : Promise<string>;
+
+    interface ChatOptions extends AITextActionOptions {
+      // related documents
+      docs?: DocContext[];
+      sessionId?: string;
+      isRootSession?: boolean;
+    }
 
     interface TranslateOptions extends AITextActionOptions {
       lang: (typeof translateLangs)[number];
@@ -112,7 +128,7 @@ declare global {
 
     interface AIActions {
       // chat is a bit special because it's has a internally maintained session
-      chat<T extends AITextActionOptions>(options: T): AIActionTextResponse<T>;
+      chat<T extends ChatOptions>(options: T): AIActionTextResponse<T>;
 
       summary<T extends AITextActionOptions>(
         options: T
@@ -222,11 +238,22 @@ declare global {
       action: string;
       createdAt: string;
       messages: {
+        id: string; // message id
         content: string;
         createdAt: string;
-        role: 'user' | 'assistant';
+        role: MessageRole;
+        attachments?: string[];
       }[];
     }
+
+    type MessageRole = 'user' | 'assistant';
+
+    type AIHistoryIds = Pick<AIHistory, 'sessionId' | 'messages'> & {
+      messages: Pick<
+        AIHistory['messages'][number],
+        'id' | 'createdAt' | 'role'
+      >[];
+    };
 
     interface AIHistoryService {
       // non chat histories
@@ -236,13 +263,23 @@ declare global {
       ) => Promise<AIHistory[] | undefined>;
       chats: (
         workspaceId: string,
-        docId?: string
+        docId?: string,
+        options?: RequestOptions<
+          typeof getCopilotHistoriesQuery
+        >['variables']['options']
       ) => Promise<AIHistory[] | undefined>;
       cleanup: (
         workspaceId: string,
         docId: string,
         sessionIds: string[]
       ) => Promise<void>;
+      ids: (
+        workspaceId: string,
+        docId?: string,
+        options?: RequestOptions<
+          typeof getCopilotHistoriesQuery
+        >['variables']['options']
+      ) => Promise<AIHistoryIds[] | undefined>;
     }
 
     interface AIPhotoEngineService {

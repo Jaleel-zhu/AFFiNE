@@ -1,4 +1,3 @@
-import { cssVar } from '@toeverything/theme';
 import { style } from '@vanilla-extract/css';
 
 export const root = style({
@@ -6,15 +5,26 @@ export const root = style({
   flexDirection: 'column',
   height: '100%',
   gap: 8,
+  '@media': {
+    'screen and (width <= 640px)': {
+      flexDirection: 'row-reverse',
+      width: '100%',
+    },
+  },
 });
 
 export const button = style({
-  color: cssVar('iconColor'),
-  boxShadow: cssVar('shadow2'),
   borderRadius: 8,
-  fontSize: '20px !important',
-  ':hover': {
-    background: cssVar('hoverColorFilled'),
+  width: 32,
+  height: 32,
+  '@media': {
+    'screen and (width <= 640px)': {
+      selectors: {
+        [`[data-action-name="close"]&`]: {
+          marginLeft: 'auto',
+          order: 0,
+        },
+      },
+    },
   },
-  pointerEvents: 'auto',
 });

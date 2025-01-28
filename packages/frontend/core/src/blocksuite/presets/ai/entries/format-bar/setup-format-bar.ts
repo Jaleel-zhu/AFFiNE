@@ -3,23 +3,26 @@ import '../../_common/components/ask-ai-button';
 import {
   type AffineFormatBarWidget,
   toolbarDefaultConfig,
-} from '@blocksuite/blocks';
+} from '@blocksuite/affine/blocks';
 import { html, type TemplateResult } from 'lit';
 
-import { AIItemGroups } from '../../_common/config';
+import { pageAIGroups } from '../../_common/config';
 
-export function setupFormatBarEntry(formatBar: AffineFormatBarWidget) {
+export function setupFormatBarAIEntry(formatBar: AffineFormatBarWidget) {
   toolbarDefaultConfig(formatBar);
   formatBar.addRawConfigItems(
     [
       {
         type: 'custom' as const,
         render(formatBar: AffineFormatBarWidget): TemplateResult | null {
-          return html` <ask-ai-button
-            .host=${formatBar.host}
-            .actionGroups=${AIItemGroups}
-            .toggleType=${'hover'}
-          ></ask-ai-button>`;
+          const richText = getRichText();
+          if (richText?.dataset.disableAskAi !== undefined) return null;
+          return html`
+            <ask-ai-toolbar-button
+              .host=${formatBar.host}
+              .actionGroups=${pageAIGroups}
+            ></ask-ai-toolbar-button>
+          `;
         },
       },
       { type: 'divider' },
@@ -27,3 +30,15 @@ export function setupFormatBarEntry(formatBar: AffineFormatBarWidget) {
     0
   );
 }
+const getRichText = () => {
+  const selection = getSelection();
+  if (!selection) return null;
+  if (selection.rangeCount === 0) return null;
+  const range = selection.getRangeAt(0);
+  const commonAncestorContainer =
+    range.commonAncestorContainer instanceof Element
+      ? range.commonAncestorContainer
+      : range.commonAncestorContainer.parentElement;
+  if (!commonAncestorContainer) return null;
+  return commonAncestorContainer.closest('rich-text');
+};

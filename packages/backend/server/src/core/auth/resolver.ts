@@ -11,23 +11,23 @@ import {
 
 import {
   ActionForbidden,
-  Config,
   EmailAlreadyUsed,
   EmailTokenNotFound,
   EmailVerificationRequired,
   InvalidEmailToken,
+  LinkExpired,
   SameEmailProvided,
   SkipThrottle,
   Throttle,
   URLHelper,
-} from '../../fundamentals';
-import { UserService } from '../user';
+} from '../../base';
+import { Models, TokenType } from '../../models';
+import { Admin } from '../common';
 import { UserType } from '../user/types';
 import { validators } from '../utils/validators';
-import { CurrentUser } from './current-user';
 import { Public } from './guard';
 import { AuthService } from './service';
-import { TokenService, TokenType } from './token';
+import { CurrentUser } from './session';
 
 @ObjectType('tokenType')
 export class ClientTokenType {
@@ -45,11 +45,9 @@ export class ClientTokenType {
 @Resolver(() => UserType)
 export class AuthResolver {
   constructor(
-    private readonly config: Config,
     private readonly url: URLHelper,
     private readonly auth: AuthService,
-    private readonly user: UserService,
-    private readonly token: TokenService
+    private readonly models: Models
   ) {}
 
   @SkipThrottle()
@@ -65,7 +63,7 @@ export class AuthResolver {
 
   @ResolveField(() => ClientTokenType, {
     name: 'token',
-    deprecationReason: 'use [/api/auth/authorize]',
+    deprecationReason: 'use [/api/auth/sign-in?native=true] instead',
   })
   async clientToken(
     @CurrentUser() currentUser: CurrentUser,
@@ -75,39 +73,32 @@ export class AuthResolver {
       throw new ActionForbidden();
     }
 
-    const session = await this.auth.createUserSession(
-      user,
-      undefined,
-      this.config.auth.accessToken.ttl
-    );
+    const userSession = await this.auth.createUserSession(user.id);
 
     return {
-      sessionToken: session.sessionId,
-      token: session.sessionId,
+      sessionToken: userSession.sessionId,
+      token: userSession.sessionId,
       refresh: '',
     };
   }
 
-  @Mutation(() => UserType)
+  @Public()
+  @Mutation(() => Boolean)
   async changePassword(
-    @CurrentUser() user: CurrentUser,
     @Args('token') token: string,
-    @Args('newPassword') newPassword: string
+    @Args('newPassword') newPassword: string,
+    @Args('userId', { type: () => String, nullable: true }) userId?: string
   ) {
-    const config = await this.config.runtime.fetchAll({
-      'auth/password.max': true,
-      'auth/password.min': true,
-    });
-    validators.assertValidPassword(newPassword, {
-      min: config['auth/password.min'],
-      max: config['auth/password.max'],
-    });
+    if (!userId) {
+      throw new LinkExpired();
+    }
+
     // NOTE: Set & Change password are using the same token type.
-    const valid = await this.token.verifyToken(
+    const valid = await this.models.verificationToken.verify(
       TokenType.ChangePassword,
       token,
       {
-        credential: user.id,
+        credential: userId,
       }
     );
 
@@ -115,10 +106,10 @@ export class AuthResolver {
       throw new InvalidEmailToken();
     }
 
-    await this.auth.changePassword(user.id, newPassword);
-    await this.auth.revokeUserSessions(user.id);
+    await this.auth.changePassword(userId, newPassword);
+    await this.auth.revokeUserSessions(userId);
 
-    return user;
+    return true;
   }
 
   @Mutation(() => UserType)
@@ -127,11 +118,14 @@ export class AuthResolver {
     @Args('token') token: string,
     @Args('email') email: string
   ) {
-    validators.assertValidEmail(email);
     // @see [sendChangeEmail]
-    const valid = await this.token.verifyToken(TokenType.VerifyEmail, token, {
-      credential: user.id,
-    });
+    const valid = await this.models.verificationToken.verify(
+      TokenType.VerifyEmail,
+      token,
+      {
+        credential: user.id,
+      }
+    );
 
     if (!valid) {
       throw new InvalidEmailToken();
@@ -150,19 +144,22 @@ export class AuthResolver {
   async sendChangePasswordEmail(
     @CurrentUser() user: CurrentUser,
     @Args('callbackUrl') callbackUrl: string,
-    // @deprecated
-    @Args('email', { nullable: true }) _email?: string
+    @Args('email', {
+      nullable: true,
+      deprecationReason: 'fetched from signed in user',
+    })
+    _email?: string
   ) {
     if (!user.emailVerified) {
       throw new EmailVerificationRequired();
     }
 
-    const token = await this.token.createToken(
+    const token = await this.models.verificationToken.create(
       TokenType.ChangePassword,
       user.id
     );
 
-    const url = this.url.link(callbackUrl, { token });
+    const url = this.url.link(callbackUrl, { userId: user.id, token });
 
     const res = await this.auth.sendChangePasswordEmail(user.email, url);
 
@@ -173,21 +170,13 @@ export class AuthResolver {
   async sendSetPasswordEmail(
     @CurrentUser() user: CurrentUser,
     @Args('callbackUrl') callbackUrl: string,
-    @Args('email', { nullable: true }) _email?: string
+    @Args('email', {
+      nullable: true,
+      deprecationReason: 'fetched from signed in user',
+    })
+    _email?: string
   ) {
-    if (!user.emailVerified) {
-      throw new EmailVerificationRequired();
-    }
-
-    const token = await this.token.createToken(
-      TokenType.ChangePassword,
-      user.id
-    );
-
-    const url = this.url.link(callbackUrl, { token });
-
-    const res = await this.auth.sendSetPasswordEmail(user.email, url);
-    return !res.rejected.length;
+    return this.sendChangePasswordEmail(user, callbackUrl);
   }
 
   // The change email step is:
@@ -208,7 +197,10 @@ export class AuthResolver {
       throw new EmailVerificationRequired();
     }
 
-    const token = await this.token.createToken(TokenType.ChangeEmail, user.id);
+    const token = await this.models.verificationToken.create(
+      TokenType.ChangeEmail,
+      user.id
+    );
 
     const url = this.url.link(callbackUrl, { token });
 
@@ -228,15 +220,19 @@ export class AuthResolver {
     }
 
     validators.assertValidEmail(email);
-    const valid = await this.token.verifyToken(TokenType.ChangeEmail, token, {
-      credential: user.id,
-    });
+    const valid = await this.models.verificationToken.verify(
+      TokenType.ChangeEmail,
+      token,
+      {
+        credential: user.id,
+      }
+    );
 
     if (!valid) {
       throw new InvalidEmailToken();
     }
 
-    const hasRegistered = await this.user.findUserByEmail(email);
+    const hasRegistered = await this.models.user.getUserByEmail(email);
 
     if (hasRegistered) {
       if (hasRegistered.id !== user.id) {
@@ -246,7 +242,7 @@ export class AuthResolver {
       }
     }
 
-    const verifyEmailToken = await this.token.createToken(
+    const verifyEmailToken = await this.models.verificationToken.create(
       TokenType.VerifyEmail,
       user.id
     );
@@ -262,7 +258,10 @@ export class AuthResolver {
     @CurrentUser() user: CurrentUser,
     @Args('callbackUrl') callbackUrl: string
   ) {
-    const token = await this.token.createToken(TokenType.VerifyEmail, user.id);
+    const token = await this.models.verificationToken.create(
+      TokenType.VerifyEmail,
+      user.id
+    );
 
     const url = this.url.link(callbackUrl, { token });
 
@@ -279,9 +278,13 @@ export class AuthResolver {
       throw new EmailTokenNotFound();
     }
 
-    const valid = await this.token.verifyToken(TokenType.VerifyEmail, token, {
-      credential: user.id,
-    });
+    const valid = await this.models.verificationToken.verify(
+      TokenType.VerifyEmail,
+      token,
+      {
+        credential: user.id,
+      }
+    );
 
     if (!valid) {
       throw new InvalidEmailToken();
@@ -290,5 +293,21 @@ export class AuthResolver {
     const { emailVerifiedAt } = await this.auth.setEmailVerified(user.id);
 
     return emailVerifiedAt !== null;
+  }
+
+  @Admin()
+  @Mutation(() => String, {
+    description: 'Create change password url',
+  })
+  async createChangePasswordUrl(
+    @Args('userId') userId: string,
+    @Args('callbackUrl') callbackUrl: string
+  ): Promise<string> {
+    const token = await this.models.verificationToken.create(
+      TokenType.ChangePassword,
+      userId
+    );
+
+    return this.url.link(callbackUrl, { userId, token });
   }
 }

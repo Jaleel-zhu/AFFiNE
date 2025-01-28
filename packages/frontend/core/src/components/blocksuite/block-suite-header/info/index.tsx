@@ -1,22 +1,28 @@
-import { IconButton, Tooltip } from '@affine/component';
-import { openInfoModalAtom } from '@affine/core/atoms';
+import { IconButton } from '@affine/component';
+import { WorkspaceDialogService } from '@affine/core/modules/dialogs';
 import { useI18n } from '@affine/i18n';
+import { track } from '@affine/track';
 import { InformationIcon } from '@blocksuite/icons/rc';
-import { useSetAtom } from 'jotai';
+import { useService } from '@toeverything/infra';
+import { useCallback } from 'react';
 
-export const InfoButton = () => {
-  const setOpenInfoModal = useSetAtom(openInfoModalAtom);
+export const InfoButton = ({ docId }: { docId: string }) => {
+  const workspaceDialogService = useService(WorkspaceDialogService);
   const t = useI18n();
-  const onOpenInfoModal = () => {
-    setOpenInfoModal(true);
-  };
+
+  const onOpenInfoModal = useCallback(() => {
+    track.$.header.actions.openDocInfo();
+    workspaceDialogService.open('doc-info', { docId });
+  }, [docId, workspaceDialogService]);
+
   return (
-    <Tooltip content={t['com.affine.page-properties.page-info.view']()}>
-      <IconButton
-        data-testid="header-info-button"
-        onClick={onOpenInfoModal}
-        icon={<InformationIcon />}
-      />
-    </Tooltip>
+    <IconButton
+      size="20"
+      tooltip={t['com.affine.page-properties.page-info.view']()}
+      data-testid="header-info-button"
+      onClick={onOpenInfoModal}
+    >
+      <InformationIcon />
+    </IconButton>
   );
 };

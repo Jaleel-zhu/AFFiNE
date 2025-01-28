@@ -5,7 +5,6 @@ export const workbenchRootContainer = style({
   display: 'flex',
   height: '100%',
   flex: 1,
-  overflow: 'hidden',
 });
 
 export const workbenchViewContainer = style({
@@ -25,7 +24,7 @@ export const workbenchSidebar = style({
       borderRadius: 6,
     },
     [`&[data-client-border=false]`]: {
-      borderLeft: `1px solid ${cssVar('borderColor')}`,
+      borderLeft: `0.5px solid ${cssVar('borderColor')}`,
     },
   },
 });

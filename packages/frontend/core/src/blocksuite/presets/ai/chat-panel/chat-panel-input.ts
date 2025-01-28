@@ -1,9 +1,18 @@
-import type { EditorHost } from '@blocksuite/block-std';
-import { WithDisposable } from '@blocksuite/block-std';
-import { type AIError, openFileOrFiles } from '@blocksuite/blocks';
-import { assertExists } from '@blocksuite/global/utils';
+import { stopPropagation } from '@affine/core/utils';
+import type { EditorHost } from '@blocksuite/affine/block-std';
+import {
+  type AIError,
+  openFileOrFiles,
+  unsafeCSSVarV2,
+} from '@blocksuite/affine/blocks';
+import {
+  assertExists,
+  SignalWatcher,
+  WithDisposable,
+} from '@blocksuite/affine/global/utils';
+import { ImageIcon, PublishIcon } from '@blocksuite/icons/lit';
 import { css, html, LitElement, nothing } from 'lit';
-import { customElement, property, query, state } from 'lit/decorators.js';
+import { property, query, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 
 import {
@@ -11,22 +20,22 @@ import {
   ChatClearIcon,
   ChatSendIcon,
   CloseIcon,
-  ImageIcon,
 } from '../_common/icons';
 import { AIProvider } from '../provider';
 import { reportResponse } from '../utils/action-reporter';
 import { readBlobAsURL } from '../utils/image';
-import type { ChatContextValue, ChatMessage } from './chat-context';
+import type { AINetworkSearchConfig } from './chat-config';
+import type { ChatContextValue, ChatMessage, DocContext } from './chat-context';
+import { isDocChip } from './components/utils';
 
-const MaximumImageCount = 8;
+const MaximumImageCount = 32;
 
 function getFirstTwoLines(text: string) {
   const lines = text.split('\n');
   return lines.slice(0, 2);
 }
 
-@customElement('chat-panel-input')
-export class ChatPanelInput extends WithDisposable(LitElement) {
+export class ChatPanelInput extends SignalWatcher(WithDisposable(LitElement)) {
   static override styles = css`
     .chat-panel-input {
       display: flex;
@@ -106,10 +115,28 @@ export class ChatPanelInput extends WithDisposable(LitElement) {
         margin-left: auto;
       }
 
-      .image-upload {
+      .image-upload,
+      .chat-network-search {
         display: flex;
         justify-content: center;
         align-items: center;
+        svg {
+          width: 20px;
+          height: 20px;
+          color: ${unsafeCSSVarV2('icon/primary')};
+        }
+      }
+      .chat-network-search[data-active='true'] svg {
+        color: ${unsafeCSSVarV2('icon/activated')};
+      }
+
+      .image-upload[aria-disabled='true'],
+      .chat-network-search[aria-disabled='true'] {
+        cursor: not-allowed;
+      }
+      .image-upload[aria-disabled='true'] svg,
+      .chat-network-search[aria-disabled='true'] svg {
+        color: var(--affine-text-disable-color) !important;
       }
     }
 
@@ -141,31 +168,46 @@ export class ChatPanelInput extends WithDisposable(LitElement) {
       }
     }
 
-    .chat-panel-images {
-      display: flex;
-      gap: 4px;
-      flex-wrap: wrap;
-      position: relative;
+    .chat-panel-images-wrapper {
+      overflow: hidden scroll;
+      max-height: 128px;
 
-      .image-container {
-        width: 58px;
-        height: 58px;
-        border-radius: 4px;
-        border: 1px solid var(--affine-border-color);
-        cursor: pointer;
-        overflow: hidden;
-        position: relative;
+      .chat-panel-images {
         display: flex;
-        justify-content: center;
-        align-items: center;
+        gap: 4px;
+        flex-wrap: wrap;
+        position: relative;
 
-        img {
-          max-width: 100%;
-          max-height: 100%;
-          width: auto;
-          height: auto;
+        .image-container {
+          width: 58px;
+          height: 58px;
+          border-radius: 4px;
+          border: 1px solid var(--affine-border-color);
+          cursor: pointer;
+          overflow: hidden;
+          position: relative;
+          display: flex;
+          justify-content: center;
+          align-items: center;
+
+          img {
+            max-width: 100%;
+            max-height: 100%;
+            width: auto;
+            height: auto;
+          }
         }
       }
+    }
+
+    .chat-panel-send svg rect {
+      fill: var(--affine-primary-color);
+    }
+    .chat-panel-send[aria-disabled='true'] {
+      cursor: not-allowed;
+    }
+    .chat-panel-send[aria-disabled='true'] svg rect {
+      fill: var(--affine-text-disable-color);
     }
 
     .close-wrapper {
@@ -222,6 +264,9 @@ export class ChatPanelInput extends WithDisposable(LitElement) {
   @property({ attribute: false })
   accessor cleanupHistories!: () => Promise<void>;
 
+  @property({ attribute: false })
+  accessor networkSearchConfig!: AINetworkSearchConfig;
+
   private _addImages(images: File[]) {
     const oldImages = this.chatContextValue.images;
     this.updateContext({
@@ -232,39 +277,40 @@ export class ChatPanelInput extends WithDisposable(LitElement) {
   private _renderImages(images: File[]) {
     return html`
       <div
-        class="chat-panel-images"
+        class="chat-panel-images-wrapper"
         @mouseleave=${() => {
           this.closeWrapper.style.display = 'none';
           this.curIndex = -1;
         }}
       >
-        ${repeat(
-          images,
-          image => image.name,
-          (image, index) =>
-            html`<div
-              class="image-container"
-              @mouseenter=${(evt: MouseEvent) => {
-                const ele = evt.target as HTMLImageElement;
-                const rect = ele.getBoundingClientRect();
-                assertExists(ele.parentElement);
-                const parentRect = ele.parentElement.getBoundingClientRect();
-                const left = Math.abs(rect.right - parentRect.left) - 8;
-                const top = Math.abs(parentRect.top - rect.top) - 8;
-                this.curIndex = index;
-                this.closeWrapper.style.display = 'flex';
-                this.closeWrapper.style.left = left + 'px';
-                this.closeWrapper.style.top = top + 'px';
-              }}
-            >
-              <img src="${URL.createObjectURL(image)}" alt="${image.name}" />
-            </div>`
-        )}
+        <div class="chat-panel-images">
+          ${repeat(
+            images,
+            image => image.name,
+            (image, index) =>
+              html`<div
+                class="image-container"
+                @mouseenter=${(evt: MouseEvent) => {
+                  const ele = evt.target as HTMLImageElement;
+                  const rect = ele.getBoundingClientRect();
+                  assertExists(ele.parentElement?.parentElement);
+                  const parentRect =
+                    ele.parentElement.parentElement.getBoundingClientRect();
+                  const left = Math.abs(rect.right - parentRect.left) - 8;
+                  const top = Math.abs(parentRect.top - rect.top);
+                  this.curIndex = index;
+                  this.closeWrapper.style.display = 'flex';
+                  this.closeWrapper.style.left = left + 'px';
+                  this.closeWrapper.style.top = top + 'px';
+                }}
+              >
+                <img src="${URL.createObjectURL(image)}" alt="${image.name}" />
+              </div>`
+          )}
+        </div>
         <div
           class="close-wrapper"
           @click=${() => {
-            AIProvider.slots.toggleChatCards.emit({ visible: true });
-
             if (this.curIndex >= 0 && this.curIndex < images.length) {
               const newImages = [...images];
               newImages.splice(this.curIndex, 1);
@@ -280,24 +326,54 @@ export class ChatPanelInput extends WithDisposable(LitElement) {
     `;
   }
 
+  private readonly _toggleNetworkSearch = (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const enable = this.networkSearchConfig.enabled.value;
+    this.networkSearchConfig.setEnabled(!enable);
+  };
+
+  private readonly _uploadImageFiles = async (_e: MouseEvent) => {
+    const images = await openFileOrFiles({
+      acceptType: 'Images',
+      multiple: true,
+    });
+    if (!images) return;
+    this._addImages(images);
+  };
+
+  override connectedCallback() {
+    super.connectedCallback();
+
+    this._disposables.add(
+      AIProvider.slots.requestSendWithChat.on(
+        async ({ input, context, host }) => {
+          if (this.host === host) {
+            context && this.updateContext(context);
+            await this.updateComplete;
+            await this.send(input);
+          }
+        }
+      )
+    );
+  }
+
   protected override render() {
     const { images, status } = this.chatContextValue;
     const hasImages = images.length > 0;
     const maxHeight = hasImages ? 272 + 2 : 200 + 2;
-
+    const networkDisabled = !!this.chatContextValue.images.length;
+    const networkActive = !!this.networkSearchConfig.enabled.value;
+    const uploadDisabled = networkActive && !networkDisabled;
     return html`<style>
-        .chat-panel-send svg rect {
-          fill: ${this.isInputEmpty && hasImages
-            ? 'var(--affine-text-disable-color)'
-            : 'var(--affine-primary-color)'};
-        }
-
         .chat-panel-input {
           border-color: ${this.focused
             ? 'var(--affine-primary-color)'
             : 'var(--affine-border-color)'};
           box-shadow: ${this.focused ? 'var(--affine-active-shadow)' : 'none'};
           max-height: ${maxHeight}px !important;
+          user-select: none;
         }
       </style>
       <div class="chat-panel-input">
@@ -312,7 +388,6 @@ export class ChatPanelInput extends WithDisposable(LitElement) {
               <div
                 class="chat-quote-close"
                 @click=${() => {
-                  AIProvider.slots.toggleChatCards.emit({ visible: true });
                   this.updateContext({ quote: '', markdown: '' });
                 }}
               >
@@ -337,8 +412,7 @@ export class ChatPanelInput extends WithDisposable(LitElement) {
           }}
           @keydown=${async (evt: KeyboardEvent) => {
             if (evt.key === 'Enter' && !evt.shiftKey && !evt.isComposing) {
-              evt.preventDefault();
-              await this.send();
+              this._onTextareaSend(evt);
             }
           }}
           @focus=${() => {
@@ -360,6 +434,7 @@ export class ChatPanelInput extends WithDisposable(LitElement) {
               }
             }
           }}
+          data-testid="chat-panel-input"
         ></textarea>
         <div class="chat-panel-input-actions">
           <div
@@ -367,22 +442,33 @@ export class ChatPanelInput extends WithDisposable(LitElement) {
             @click=${async () => {
               await this.cleanupHistories();
             }}
+            data-testid="chat-panel-clear"
           >
             ${ChatClearIcon}
           </div>
+          ${this.networkSearchConfig.visible.value
+            ? html`
+                <div
+                  class="chat-network-search"
+                  data-testid="chat-network-search"
+                  aria-disabled=${networkDisabled}
+                  data-active=${networkActive}
+                  @click=${networkDisabled
+                    ? undefined
+                    : this._toggleNetworkSearch}
+                  @pointerdown=${stopPropagation}
+                >
+                  ${PublishIcon()}
+                </div>
+              `
+            : nothing}
           ${images.length < MaximumImageCount
             ? html`<div
                 class="image-upload"
-                @click=${async () => {
-                  const images = await openFileOrFiles({
-                    acceptType: 'Images',
-                    multiple: true,
-                  });
-                  if (!images) return;
-                  this._addImages(images);
-                }}
+                aria-disabled=${uploadDisabled}
+                @click=${uploadDisabled ? undefined : this._uploadImageFiles}
               >
-                ${ImageIcon}
+                ${ImageIcon()}
               </div>`
             : nothing}
           ${status === 'transmitting'
@@ -395,25 +481,42 @@ export class ChatPanelInput extends WithDisposable(LitElement) {
               >
                 ${ChatAbortIcon}
               </div>`
-            : html`<div @click="${this.send}" class="chat-panel-send">
+            : html`<div
+                @click="${this._onTextareaSend}"
+                class="chat-panel-send"
+                aria-disabled=${this.isInputEmpty}
+                data-testid="chat-panel-send"
+              >
                 ${ChatSendIcon}
               </div>`}
         </div>
       </div>`;
   }
 
-  send = async () => {
-    const { status, markdown } = this.chatContextValue;
+  private readonly _onTextareaSend = (e: MouseEvent | KeyboardEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const value = this.textarea.value.trim();
+    if (value.length === 0) return;
+
+    this.textarea.value = '';
+    this.isInputEmpty = true;
+    this.textarea.style.height = 'unset';
+
+    this.send(value).catch(console.error);
+  };
+
+  send = async (text: string) => {
+    const { status, markdown, chips } = this.chatContextValue;
     if (status === 'loading' || status === 'transmitting') return;
 
-    const text = this.textarea.value;
     const { images } = this.chatContextValue;
-    if (!text && images.length === 0) {
+    if (!text) {
       return;
     }
     const { doc } = this.host;
-    this.textarea.value = '';
-    this.isInputEmpty = true;
+
     this.updateContext({
       images: [],
       status: 'loading',
@@ -426,33 +529,47 @@ export class ChatPanelInput extends WithDisposable(LitElement) {
       images?.map(image => readBlobAsURL(image))
     );
 
-    const content = (markdown ? `${markdown}\n` : '') + text;
-
+    const userInput = (markdown ? `${markdown}\n` : '') + text;
     this.updateContext({
       items: [
         ...this.chatContextValue.items,
         {
+          id: '',
           role: 'user',
-          content: content,
+          content: userInput,
           createdAt: new Date().toISOString(),
           attachments,
         },
-        { role: 'assistant', content: '', createdAt: new Date().toISOString() },
+        {
+          id: '',
+          role: 'assistant',
+          content: '',
+          createdAt: new Date().toISOString(),
+        },
       ],
     });
 
     try {
       const abortController = new AbortController();
+      const docs: DocContext[] = chips
+        .filter(isDocChip)
+        .filter(chip => !!chip.markdown?.value && chip.state === 'success')
+        .map(chip => ({
+          docId: chip.docId,
+          markdown: chip.markdown?.value || '',
+        }));
       const stream = AIProvider.actions.chat?.({
-        input: content,
+        input: userInput,
+        docs: docs,
         docId: doc.id,
         attachments: images,
-        workspaceId: doc.collection.id,
+        workspaceId: doc.workspace.id,
         host: this.host,
         stream: true,
         signal: abortController.signal,
         where: 'chat-panel',
         control: 'chat-send',
+        isRootSession: true,
       });
 
       if (stream) {
@@ -466,6 +583,24 @@ export class ChatPanelInput extends WithDisposable(LitElement) {
         }
 
         this.updateContext({ status: 'success' });
+
+        if (!this.chatContextValue.chatSessionId) {
+          this.updateContext({
+            chatSessionId: AIProvider.LAST_ROOT_SESSION_ID,
+          });
+        }
+
+        const { items } = this.chatContextValue;
+        const last = items[items.length - 1] as ChatMessage;
+        if (!last.id) {
+          const historyIds = await AIProvider.histories?.ids(
+            doc.workspace.id,
+            doc.id,
+            { sessionId: this.chatContextValue.chatSessionId }
+          );
+          if (!historyIds || !historyIds[0]) return;
+          last.id = historyIds[0].messages.at(-1)?.id ?? '';
+        }
       }
     } catch (error) {
       this.updateContext({ status: 'error', error: error as AIError });

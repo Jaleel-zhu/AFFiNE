@@ -1,10 +1,12 @@
 import { toReactNode } from '@affine/component';
-import { BlockElement } from '@blocksuite/block-std';
+import { AIChatBlockPeekViewTemplate } from '@affine/core/blocksuite/presets/ai';
+import { BlockComponent } from '@blocksuite/affine/block-std';
 import { useLiveData, useService } from '@toeverything/infra';
 import { useEffect, useMemo } from 'react';
 
 import type { ActivePeekView } from '../entities/peek-view';
 import { PeekViewService } from '../services/peek-view';
+import { AttachmentPreviewPeekView } from './attachment-preview';
 import { DocPeekPreview } from './doc-preview';
 import { ImagePreviewPeekView } from './image-preview';
 import {
@@ -12,6 +14,7 @@ import {
   type PeekViewModalContainerProps,
 } from './modal-container';
 import {
+  AttachmentPeekViewControls,
   DefaultPeekViewControls,
   DocPeekViewControls,
 } from './peek-view-controls';
@@ -21,18 +24,30 @@ function renderPeekView({ info }: ActivePeekView) {
     return toReactNode(info.template);
   }
   if (info.type === 'doc') {
+    return <DocPeekPreview docRef={info.docRef} />;
+  }
+
+  if (info.type === 'attachment' && info.docRef.blockIds?.[0]) {
     return (
-      <DocPeekPreview
-        mode={info.mode}
-        xywh={info.xywh}
-        docId={info.docId}
-        blockId={info.blockId}
+      <AttachmentPreviewPeekView
+        docId={info.docRef.docId}
+        blockId={info.docRef.blockIds?.[0]}
       />
     );
   }
 
-  if (info.type === 'image') {
-    return <ImagePreviewPeekView docId={info.docId} blockId={info.blockId} />;
+  if (info.type === 'image' && info.docRef.blockIds?.[0]) {
+    return (
+      <ImagePreviewPeekView
+        docId={info.docRef.docId}
+        blockId={info.docRef.blockIds?.[0]}
+      />
+    );
+  }
+
+  if (info.type === 'ai-chat-block') {
+    const template = AIChatBlockPeekViewTemplate(info.model, info.host);
+    return toReactNode(template);
   }
 
   return null; // unreachable
@@ -40,13 +55,11 @@ function renderPeekView({ info }: ActivePeekView) {
 
 const renderControls = ({ info }: ActivePeekView) => {
   if (info.type === 'doc') {
-    return (
-      <DocPeekViewControls
-        mode={info.mode}
-        docId={info.docId}
-        blockId={info.docId}
-      />
-    );
+    return <DocPeekViewControls docRef={info.docRef} />;
+  }
+
+  if (info.type === 'attachment') {
+    return <AttachmentPeekViewControls docRef={info.docRef} />;
   }
 
   if (info.type === 'image') {
@@ -54,6 +67,13 @@ const renderControls = ({ info }: ActivePeekView) => {
   }
 
   return <DefaultPeekViewControls />;
+};
+
+const getMode = (info: ActivePeekView['info']) => {
+  if (info.type === 'image') {
+    return 'full';
+  }
+  return 'fit';
 };
 
 const getRendererProps = (
@@ -69,11 +89,15 @@ const getRendererProps = (
     children: preview,
     controls,
     target:
-      activePeekView?.target instanceof HTMLElement
-        ? activePeekView.target
+      activePeekView?.target.element instanceof HTMLElement
+        ? activePeekView.target.element
         : undefined,
-    padding: activePeekView.info.type === 'doc',
-    animation: activePeekView.info.type === 'image' ? 'fade' : 'zoom',
+    mode: getMode(activePeekView.info),
+    animation:
+      activePeekView.target.element && getMode(activePeekView.info) !== 'full'
+        ? 'zoom'
+        : 'fade',
+    dialogFrame: activePeekView.info.type !== 'image',
   };
 };
 
@@ -91,8 +115,8 @@ export const PeekViewManagerModal = () => {
 
   useEffect(() => {
     const subscription = peekViewEntity.show$.subscribe(() => {
-      if (activePeekView?.target instanceof BlockElement) {
-        activePeekView.target.requestUpdate();
+      if (activePeekView?.target.element instanceof BlockComponent) {
+        activePeekView.target.element.requestUpdate();
       }
     });
 
@@ -104,7 +128,8 @@ export const PeekViewManagerModal = () => {
   return (
     <PeekViewModalContainer
       {...renderProps}
-      open={show && !!renderProps}
+      animation={show?.animation ? renderProps?.animation : 'none'}
+      open={!!show?.value && !!renderProps}
       onOpenChange={open => {
         if (!open) {
           peekViewEntity.close();

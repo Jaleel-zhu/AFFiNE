@@ -26,7 +26,7 @@ export class CopilotCheckHtmlExecutor extends AutoRegisteredWorkflowExecutor {
   }
 
   private async checkHtml(
-    content?: string | string[],
+    content?: string | string[] | Record<string, any>,
     strict?: boolean
   ): Promise<boolean> {
     try {
@@ -43,7 +43,7 @@ export class CopilotCheckHtmlExecutor extends AutoRegisteredWorkflowExecutor {
         }
       }
       return false;
-    } catch (e) {
+    } catch {
       return false;
     }
   }

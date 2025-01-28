@@ -1,11 +1,9 @@
 import { IconButton } from '@affine/component';
-import { WindowsAppControls } from '@affine/core/components/pure/header/windows-app-controls';
 import { RightSidebarIcon } from '@blocksuite/icons/rc';
 
 import * as styles from './sidebar-header.css';
 
 export type HeaderProps = {
-  floating: boolean;
   onToggle?: () => void;
   children?: React.ReactNode;
 };
@@ -14,20 +12,13 @@ function Container({
   children,
   style,
   className,
-  floating,
 }: {
   children: React.ReactNode;
   className?: string;
   style?: React.CSSProperties;
-  floating?: boolean;
 }) {
   return (
-    <div
-      data-testid="header"
-      style={style}
-      className={className}
-      data-sidebar-floating={floating}
-    >
+    <div data-testid="header" style={style} className={className}>
       {children}
     </div>
   );
@@ -35,34 +26,22 @@ function Container({
 
 const ToggleButton = ({ onToggle }: { onToggle?: () => void }) => {
   return (
-    <IconButton size="large" onClick={onToggle}>
+    <IconButton size="24" onClick={onToggle}>
       <RightSidebarIcon />
     </IconButton>
   );
 };
 
-const Windows = ({ floating, onToggle, children }: HeaderProps) => {
+export const Header = ({ children, onToggle }: HeaderProps) => {
   return (
-    <Container className={styles.header} floating={floating}>
+    <Container className={styles.header}>
       {children}
-      <div className={styles.spacer} />
-      <ToggleButton onToggle={onToggle} />
-      <div className={styles.windowsAppControlsContainer}>
-        <WindowsAppControls />
-      </div>
+      {!BUILD_CONFIG.isElectron && (
+        <>
+          <div className={styles.spacer} />
+          <ToggleButton onToggle={onToggle} />
+        </>
+      )}
     </Container>
   );
 };
-
-const NonWindows = ({ floating, children, onToggle }: HeaderProps) => {
-  return (
-    <Container className={styles.header} floating={floating}>
-      {children}
-      <div className={styles.spacer} />
-      <ToggleButton onToggle={onToggle} />
-    </Container>
-  );
-};
-
-export const Header =
-  environment.isDesktop && environment.isWindows ? Windows : NonWindows;

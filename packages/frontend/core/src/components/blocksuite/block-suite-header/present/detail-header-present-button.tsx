@@ -1,17 +1,18 @@
 import { IconButton } from '@affine/component';
+import { EditorService } from '@affine/core/modules/editor';
 import { PresentationIcon } from '@blocksuite/icons/rc';
-
-import { usePresent } from './use-present';
+import { useService } from '@toeverything/infra';
 
 export const DetailPageHeaderPresentButton = () => {
-  const { isPresent, handlePresent } = usePresent();
+  const editorService = useService(EditorService);
 
   return (
     <IconButton
       style={{ flexShrink: 0 }}
-      size={'large'}
-      icon={<PresentationIcon />}
-      onClick={() => handlePresent(!isPresent)}
-    ></IconButton>
+      size="24"
+      onClick={() => editorService.editor.togglePresentation()}
+    >
+      <PresentationIcon />
+    </IconButton>
   );
 };
