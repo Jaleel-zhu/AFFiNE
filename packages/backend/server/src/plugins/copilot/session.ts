@@ -1,10 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
 import { Injectable, Logger } from '@nestjs/common';
-import { AiPromptRole, PrismaClient } from '@prisma/client';
+import { AiPromptRole, Prisma, PrismaClient } from '@prisma/client';
 
-import { FeatureManagementService } from '../../core/features';
-import { QuotaService } from '../../core/quota';
 import {
   CopilotActionTaken,
   CopilotMessageNotFound,
@@ -12,7 +10,10 @@ import {
   CopilotQuotaExceeded,
   CopilotSessionDeleted,
   CopilotSessionNotFound,
-} from '../../fundamentals';
+  PrismaTransaction,
+} from '../../base';
+import { FeatureManagementService } from '../../core/features';
+import { QuotaService } from '../../core/quota';
 import { ChatMessageCache } from './message';
 import { PromptService } from './prompt';
 import {
@@ -22,6 +23,7 @@ import {
   ChatMessageSchema,
   ChatSessionForkOptions,
   ChatSessionOptions,
+  ChatSessionPromptUpdateOptions,
   ChatSessionState,
   getTokenEncoder,
   ListHistoriesOptions,
@@ -149,13 +151,24 @@ export class ChatSession implements AsyncDisposable {
         normalizedParams,
         this.config.sessionId
       );
-      finished[0].attachments = firstMessage.attachments;
+
+      // attachments should be combined with the first user message
+      const firstUserMessage =
+        finished.find(m => m.role === 'user') || finished[0];
+      firstUserMessage.attachments = [
+        finished[0].attachments || [],
+        firstMessage.attachments || [],
+      ]
+        .flat()
+        .filter(v => !!v?.trim());
+
       return finished;
     }
 
+    const lastMessage = messages.at(-1);
     return [
       ...this.state.prompt.finish(
-        Object.keys(params).length ? params : firstMessage?.params || {},
+        Object.keys(params).length ? params : lastMessage?.params || {},
         this.config.sessionId
       ),
       ...messages.filter(m => m.content?.trim() || m.attachments?.length),
@@ -188,12 +201,36 @@ export class ChatSessionService {
     private readonly prompt: PromptService
   ) {}
 
+  private async haveSession(
+    sessionId: string,
+    userId: string,
+    tx?: PrismaTransaction,
+    params?: Prisma.AiSessionCountArgs['where']
+  ) {
+    const executor = tx ?? this.db;
+    return await executor.aiSession
+      .count({
+        where: {
+          id: sessionId,
+          userId,
+          ...params,
+        },
+      })
+      .then(c => c > 0);
+  }
+
   private async setSession(state: ChatSessionState): Promise<string> {
     return await this.db.$transaction(async tx => {
       let sessionId = state.sessionId;
 
       // find existing session if session is chat session
       if (!state.prompt.action) {
+        const extraCondition: Record<string, any> = {};
+        if (state.parentSessionId) {
+          // also check session id if provided session is forked session
+          extraCondition.id = state.sessionId;
+          extraCondition.parentSessionId = state.parentSessionId;
+        }
         const { id, deletedAt } =
           (await tx.aiSession.findFirst({
             where: {
@@ -201,7 +238,8 @@ export class ChatSessionService {
               workspaceId: state.workspaceId,
               docId: state.docId,
               prompt: { action: { equals: null } },
-              parentSessionId: state.parentSessionId,
+              parentSessionId: null,
+              ...extraCondition,
             },
             select: { id: true, deletedAt: true },
           })) || {};
@@ -209,15 +247,7 @@ export class ChatSessionService {
         if (id) sessionId = id;
       }
 
-      const haveSession = await tx.aiSession
-        .count({
-          where: {
-            id: sessionId,
-            userId: state.userId,
-          },
-        })
-        .then(c => c > 0);
-
+      const haveSession = await this.haveSession(sessionId, state.userId, tx);
       if (haveSession) {
         // message will only exists when setSession call by session.save
         if (state.messages.length) {
@@ -276,7 +306,13 @@ export class ChatSessionService {
           docId: true,
           parentSessionId: true,
           messages: {
-            select: { id: true, role: true, content: true, createdAt: true },
+            select: {
+              id: true,
+              role: true,
+              content: true,
+              attachments: true,
+              createdAt: true,
+            },
             orderBy: { createdAt: 'asc' },
           },
           promptName: true,
@@ -382,6 +418,21 @@ export class ChatSessionService {
     options?: ListHistoriesOptions,
     withPrompt = false
   ): Promise<ChatHistory[]> {
+    const extraCondition = [];
+
+    if (!options?.action && options?.fork) {
+      // only query forked session if fork == true and action == false
+      extraCondition.push({
+        userId: { not: userId },
+        workspaceId: workspaceId,
+        docId: workspaceId === docId ? undefined : docId,
+        id: options?.sessionId ? { equals: options.sessionId } : undefined,
+        // should only find forked session
+        parentSessionId: { not: null },
+        deletedAt: null,
+      });
+    }
+
     return await this.db.aiSession
       .findMany({
         where: {
@@ -395,21 +446,7 @@ export class ChatSessionService {
                 : undefined,
               deletedAt: null,
             },
-            ...(options?.action
-              ? []
-              : [
-                  {
-                    userId: { not: userId },
-                    workspaceId: workspaceId,
-                    docId: workspaceId === docId ? undefined : docId,
-                    id: options?.sessionId
-                      ? { equals: options.sessionId }
-                      : undefined,
-                    // should only find forked session
-                    parentSessionId: { not: null },
-                    deletedAt: null,
-                  },
-                ]),
+            ...extraCondition,
           ],
         },
         select: {
@@ -428,13 +465,17 @@ export class ChatSessionService {
               createdAt: true,
             },
             orderBy: {
-              createdAt: 'asc',
+              // message order is asc by default
+              createdAt: options?.messageOrder === 'desc' ? 'desc' : 'asc',
             },
           },
         },
         take: options?.limit,
         skip: options?.skip,
-        orderBy: { createdAt: 'desc' },
+        orderBy: {
+          // session order is desc by default
+          createdAt: options?.sessionOrder === 'asc' ? 'asc' : 'desc',
+        },
       })
       .then(sessions =>
         Promise.all(
@@ -531,6 +572,7 @@ export class ChatSessionService {
       this.logger.error(`Prompt not found: ${options.promptName}`);
       throw new CopilotPromptNotFound({ name: options.promptName });
     }
+
     return await this.setSession({
       ...options,
       sessionId,
@@ -538,6 +580,32 @@ export class ChatSessionService {
       messages: [],
       // when client create chat session, we always find root session
       parentSessionId: null,
+    });
+  }
+
+  async updateSessionPrompt(
+    options: ChatSessionPromptUpdateOptions
+  ): Promise<string> {
+    const prompt = await this.prompt.get(options.promptName);
+    if (!prompt) {
+      this.logger.error(`Prompt not found: ${options.promptName}`);
+      throw new CopilotPromptNotFound({ name: options.promptName });
+    }
+    return await this.db.$transaction(async tx => {
+      let sessionId = options.sessionId;
+      const haveSession = await this.haveSession(
+        sessionId,
+        options.userId,
+        tx,
+        { prompt: { action: null } }
+      );
+      if (haveSession) {
+        await tx.aiSession.update({
+          where: { id: sessionId },
+          data: { promptName: prompt.name },
+        });
+      }
+      return sessionId;
     });
   }
 
@@ -559,6 +627,7 @@ export class ChatSessionService {
 
     const forkedState = {
       ...state,
+      userId: options.userId,
       sessionId: randomUUID(),
       messages: [],
       parentSessionId: options.sessionId,

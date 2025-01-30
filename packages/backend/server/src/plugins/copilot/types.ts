@@ -8,9 +8,9 @@ import type { ChatPrompt } from './prompt';
 export enum AvailableModels {
   // text to text
   Gpt4Omni = 'gpt-4o',
-  Gpt4VisionPreview = 'gpt-4-vision-preview',
-  Gpt4TurboPreview = 'gpt-4-turbo-preview',
-  Gpt35Turbo = 'gpt-3.5-turbo',
+  Gpt4Omni0806 = 'gpt-4o-2024-08-06',
+  Gpt4OmniMini = 'gpt-4o-mini',
+  Gpt4OmniMini0718 = 'gpt-4o-mini-2024-07-18',
   // embeddings
   TextEmbedding3Large = 'text-embedding-3-large',
   TextEmbedding3Small = 'text-embedding-3-small',
@@ -34,7 +34,8 @@ export function getTokenEncoder(model?: string | null): Tokenizer | null {
     // dalle don't need to calc the token
     return null;
   } else {
-    return fromModelName('gpt-4-turbo-preview');
+    // c100k based model
+    return fromModelName('gpt-4');
   }
 }
 
@@ -49,10 +50,7 @@ export const ChatMessageRole = Object.values(AiPromptRole) as [
 const PureMessageSchema = z.object({
   content: z.string(),
   attachments: z.array(z.string()).optional().nullable(),
-  params: z
-    .record(z.union([z.string(), z.array(z.string())]))
-    .optional()
-    .nullable(),
+  params: z.record(z.any()).optional().nullable(),
 });
 
 export const PromptMessageSchema = PureMessageSchema.extend({
@@ -64,12 +62,21 @@ export type PromptMessage = z.infer<typeof PromptMessageSchema>;
 export type PromptParams = NonNullable<PromptMessage['params']>;
 
 export const PromptConfigStrictSchema = z.object({
+  // openai
   jsonMode: z.boolean().nullable().optional(),
   frequencyPenalty: z.number().nullable().optional(),
   presencePenalty: z.number().nullable().optional(),
   temperature: z.number().nullable().optional(),
   topP: z.number().nullable().optional(),
   maxTokens: z.number().nullable().optional(),
+  // fal
+  modelName: z.string().nullable().optional(),
+  loras: z
+    .array(
+      z.object({ path: z.string(), scale: z.number().nullable().optional() })
+    )
+    .nullable()
+    .optional(),
 });
 
 export const PromptConfigSchema =
@@ -113,6 +120,11 @@ export interface ChatSessionOptions {
   promptName: string;
 }
 
+export interface ChatSessionPromptUpdateOptions
+  extends Pick<ChatSessionState, 'sessionId' | 'userId'> {
+  promptName: string;
+}
+
 export interface ChatSessionForkOptions
   extends Omit<ChatSessionOptions, 'promptName'> {
   sessionId: string;
@@ -131,8 +143,11 @@ export interface ChatSessionState
 
 export type ListHistoriesOptions = {
   action: boolean | undefined;
+  fork: boolean | undefined;
   limit: number | undefined;
   skip: number | undefined;
+  sessionOrder: 'asc' | 'desc' | undefined;
+  messageOrder: 'asc' | 'desc' | undefined;
   sessionId: string | undefined;
 };
 
@@ -141,6 +156,7 @@ export type ListHistoriesOptions = {
 export enum CopilotProviderType {
   FAL = 'fal',
   OpenAI = 'openai',
+  Perplexity = 'perplexity',
   // only for test
   Test = 'test',
 }
@@ -172,9 +188,13 @@ export type CopilotEmbeddingOptions = z.infer<
   typeof CopilotEmbeddingOptionsSchema
 >;
 
-const CopilotImageOptionsSchema = CopilotProviderOptionsSchema.extend({
-  seed: z.number().optional(),
-}).optional();
+const CopilotImageOptionsSchema = CopilotProviderOptionsSchema.merge(
+  PromptConfigStrictSchema
+)
+  .extend({
+    seed: z.number().optional(),
+  })
+  .optional();
 
 export type CopilotImageOptions = z.infer<typeof CopilotImageOptionsSchema>;
 

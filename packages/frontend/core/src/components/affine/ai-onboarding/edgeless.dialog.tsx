@@ -1,17 +1,12 @@
 import { Button, FlexWrapper, notify } from '@affine/component';
-import { openSettingModalAtom } from '@affine/core/atoms';
 import { SubscriptionService } from '@affine/core/modules/cloud';
-import { mixpanel } from '@affine/core/utils';
+import { WorkspaceDialogService } from '@affine/core/modules/dialogs';
+import { EditorService } from '@affine/core/modules/editor';
 import { useI18n } from '@affine/i18n';
+import { track } from '@affine/track';
 import { AiIcon } from '@blocksuite/icons/rc';
-import {
-  DocService,
-  useLiveData,
-  useServices,
-  WorkspaceService,
-} from '@toeverything/infra';
+import { useLiveData, useService, useServices } from '@toeverything/infra';
 import { cssVar } from '@toeverything/theme';
-import { useAtomValue, useSetAtom } from 'jotai';
 import Lottie from 'lottie-react';
 import { useTheme } from 'next-themes';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
@@ -46,43 +41,35 @@ const EdgelessOnboardingAnimation = () => {
 };
 
 export const AIOnboardingEdgeless = () => {
-  const { docService, subscriptionService } = useServices({
-    WorkspaceService,
-    DocService,
+  const { subscriptionService, editorService } = useServices({
     SubscriptionService,
+    EditorService,
   });
 
   const t = useI18n();
   const notifyId = useLiveData(edgelessNotifyId$);
   const generalAIOnboardingOpened = useLiveData(showAIOnboardingGeneral$);
   const aiSubscription = useLiveData(subscriptionService.subscription.ai$);
-  const settingModalOpen = useAtomValue(openSettingModalAtom);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const workspaceDialogService = useService(WorkspaceDialogService);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const setSettingModal = useSetAtom(openSettingModalAtom);
-
-  const doc = docService.doc;
-  const mode = useLiveData(doc.mode$);
+  const mode = useLiveData(editorService.editor.mode$);
 
   const goToPricingPlans = useCallback(() => {
-    mixpanel.track('PlansViewed', {
-      page: 'whiteboard editor',
-      segment: 'ai onboarding',
-      module: 'whiteboard dialog',
-    });
-    setSettingModal({
-      open: true,
+    track.$.aiOnboarding.dialog.viewPlans();
+    workspaceDialogService.open('setting', {
       activeTab: 'plans',
       scrollAnchor: 'aiPricingPlan',
     });
-  }, [setSettingModal]);
+  }, [workspaceDialogService]);
 
   useEffect(() => {
-    if (settingModalOpen.open) return;
     if (generalAIOnboardingOpened) return;
     if (notifyId) return;
     if (mode !== 'edgeless') return;
-    clearTimeout(timeoutRef.current);
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+    }
     timeoutRef.current = setTimeout(() => {
       // try to close local onboarding
       notify.dismiss(localNotifyId$.value);
@@ -103,7 +90,7 @@ export const AIOnboardingEdgeless = () => {
                   notify.dismiss(id);
                   toggleEdgelessAIOnboarding(false);
                 }}
-                type="plain"
+                variant="plain"
                 className={styles.actionButton}
               >
                 <span className={styles.getStartedButtonText}>
@@ -113,7 +100,7 @@ export const AIOnboardingEdgeless = () => {
               {aiSubscription ? null : (
                 <Button
                   className={styles.actionButton}
-                  type="plain"
+                  variant="plain"
                   onClick={() => {
                     goToPricingPlans();
                     notify.dismiss(id);
@@ -138,7 +125,6 @@ export const AIOnboardingEdgeless = () => {
     goToPricingPlans,
     mode,
     notifyId,
-    settingModalOpen,
     t,
   ]);
 

@@ -1,31 +1,24 @@
-import { IconButton, Tooltip } from '@affine/component';
+import { IconButton } from '@affine/component';
 import { useI18n } from '@affine/i18n';
 import { ArrowLeftSmallIcon, ArrowRightSmallIcon } from '@blocksuite/icons/rc';
 import { useLiveData, useService } from '@toeverything/infra';
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect } from 'react';
 
-import { useGeneralShortcuts } from '../../../hooks/affine/use-shortcuts';
 import { NavigatorService } from '../services/navigator';
 import * as styles from './navigation-buttons.css';
 
+const tooltipSideBottom = { side: 'bottom' as const };
+
 export const NavigationButtons = () => {
+  if (!BUILD_CONFIG.isElectron) {
+    return null;
+  }
+
+  return <ElectronNavigationButtons />;
+};
+
+const ElectronNavigationButtons = () => {
   const t = useI18n();
-
-  const shortcuts = useGeneralShortcuts().shortcuts;
-
-  const shortcutsObject = useMemo(() => {
-    const goBack = t['com.affine.keyboardShortcuts.goBack']();
-    const goBackShortcut = shortcuts?.[goBack];
-
-    const goForward = t['com.affine.keyboardShortcuts.goForward']();
-    const goForwardShortcut = shortcuts?.[goForward];
-    return {
-      goBack,
-      goBackShortcut,
-      goForward,
-      goForwardShortcut,
-    };
-  }, [shortcuts, t]);
 
   const navigator = useService(NavigatorService).navigator;
 
@@ -59,38 +52,32 @@ export const NavigationButtons = () => {
     };
   }, [navigator]);
 
-  if (!environment.isDesktop) {
-    return null;
-  }
-
   return (
     <div className={styles.container}>
-      <Tooltip
-        content={`${shortcutsObject.goBack} ${shortcutsObject.goBackShortcut}`}
-        side="bottom"
+      <IconButton
+        tooltip={t['Go Back']()}
+        tooltipShortcut={['$mod', '[']}
+        tooltipOptions={tooltipSideBottom}
+        className={styles.button}
+        data-testid="app-navigation-button-back"
+        disabled={!backable}
+        onClick={handleBack}
+        size={24}
       >
-        <IconButton
-          className={styles.button}
-          data-testid="app-navigation-button-back"
-          disabled={!backable}
-          onClick={handleBack}
-        >
-          <ArrowLeftSmallIcon />
-        </IconButton>
-      </Tooltip>
-      <Tooltip
-        content={`${shortcutsObject.goForward} ${shortcutsObject.goForwardShortcut}`}
-        side="bottom"
+        <ArrowLeftSmallIcon />
+      </IconButton>
+      <IconButton
+        tooltip={t['Go Forward']()}
+        tooltipShortcut={['$mod', ']']}
+        tooltipOptions={tooltipSideBottom}
+        className={styles.button}
+        data-testid="app-navigation-button-forward"
+        disabled={!forwardable}
+        onClick={handleForward}
+        size={24}
       >
-        <IconButton
-          className={styles.button}
-          data-testid="app-navigation-button-forward"
-          disabled={!forwardable}
-          onClick={handleForward}
-        >
-          <ArrowRightSmallIcon />
-        </IconButton>
-      </Tooltip>
+        <ArrowRightSmallIcon />
+      </IconButton>
     </div>
   );
 };

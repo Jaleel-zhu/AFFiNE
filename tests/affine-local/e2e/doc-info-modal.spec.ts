@@ -16,6 +16,7 @@ import {
   filterTags,
   removeSelectedTag,
 } from '@affine-test/kit/utils/properties';
+import { getCurrentDocIdFromUrl } from '@affine-test/kit/utils/url';
 import { expect, type Page } from '@playwright/test';
 
 const searchAndCreateTag = async (page: Page, name: string) => {
@@ -43,8 +44,6 @@ test('New a page and open it ,then open info modal in the title bar', async ({
 
   const infoModal = page.getByTestId('info-modal');
   await expect(infoModal).toBeVisible();
-  const tagRow = page.getByTestId('info-modal-tags-row');
-  await expect(tagRow).toBeVisible();
   const title = page.getByTestId('info-modal-title');
   await expect(title).toHaveText('this is a new page');
 });
@@ -57,14 +56,12 @@ test('New a page and open it ,then open info modal in the title bar more action 
 
   const infoModal = page.getByTestId('info-modal');
   await expect(infoModal).toBeVisible();
-  const tagRow = page.getByTestId('info-modal-tags-row');
-  await expect(tagRow).toBeVisible();
   const title = page.getByTestId('info-modal-title');
   await expect(title).toHaveText('this is a new page');
 });
 
 test('New a page, then open info modal from all doc', async ({ page }) => {
-  const newPageId = page.url().split('/').reverse()[0];
+  const newPageId = getCurrentDocIdFromUrl(page);
 
   await page.getByTestId('all-pages').click();
   const cell = getPageByTitle(page, 'this is a new page');
@@ -74,8 +71,6 @@ test('New a page, then open info modal from all doc', async ({ page }) => {
 
   const infoModal = page.getByTestId('info-modal');
   await expect(infoModal).toBeVisible();
-  const tagRow = page.getByTestId('info-modal-tags-row');
-  await expect(tagRow).toBeVisible();
   const title = page.getByTestId('info-modal-title');
   await expect(title).toHaveText('this is a new page');
 });
@@ -83,29 +78,27 @@ test('New a page, then open info modal from all doc', async ({ page }) => {
 test('New a page and add to favourites, then open info modal from sidebar', async ({
   page,
 }) => {
-  const newPageId = page.url().split('/').reverse()[0];
+  const newPageId = getCurrentDocIdFromUrl(page);
 
   await clickPageMoreActions(page);
   await page.getByTestId('editor-option-menu-favorite').click();
 
   await page.getByTestId('all-pages').click();
-  const favoriteListItemInSidebar = page.getByTestId(
-    'favourite-page-' + newPageId
+  const favoriteListItemInSidebar = page.locator(
+    `[data-testid="explorer-favorites"] [data-testid="explorer-doc-${newPageId}"]`
   );
   expect(await favoriteListItemInSidebar.textContent()).toBe(
     'this is a new page'
   );
   await favoriteListItemInSidebar.hover();
   await favoriteListItemInSidebar
-    .getByTestId('left-sidebar-page-operation-button')
+    .getByTestId('explorer-tree-node-operation-button')
     .click();
   const infoBtn = page.getByText('View Info');
   await infoBtn.click();
 
   const infoModal = page.getByTestId('info-modal');
   await expect(infoModal).toBeVisible();
-  const tagRow = page.getByTestId('info-modal-tags-row');
-  await expect(tagRow).toBeVisible();
   const title = page.getByTestId('info-modal-title');
   await expect(title).toHaveText('this is a new page');
 });
@@ -115,16 +108,16 @@ test('allow create tag', async ({ page }) => {
 
   const infoModal = page.getByTestId('info-modal');
   await expect(infoModal).toBeVisible();
-  await page.getByTestId('info-modal-tags-value').click();
+  await infoModal.getByTestId('property-tags-value').click();
   await searchAndCreateTag(page, 'Test1');
   await searchAndCreateTag(page, 'Test2');
   await closeTagsEditor(page);
-  await expectTagsVisible(page, ['Test1', 'Test2']);
+  await expectTagsVisible(infoModal, ['Test1', 'Test2']);
 
-  await page.getByTestId('info-modal-tags-value').click();
+  await infoModal.getByTestId('property-tags-value').click();
   await removeSelectedTag(page, 'Test1');
   await closeTagsEditor(page);
-  await expectTagsVisible(page, ['Test2']);
+  await expectTagsVisible(infoModal, ['Test2']);
 });
 
 test('add custom property', async ({ page }) => {
@@ -132,8 +125,10 @@ test('add custom property', async ({ page }) => {
 
   const infoModal = page.getByTestId('info-modal');
   await expect(infoModal).toBeVisible();
-  await addCustomProperty(page, 'Text');
-  await addCustomProperty(page, 'Number');
-  await addCustomProperty(page, 'Date');
-  await addCustomProperty(page, 'Checkbox');
+  await addCustomProperty(page, infoModal, 'text');
+  await addCustomProperty(page, infoModal, 'number');
+  await addCustomProperty(page, infoModal, 'date');
+  await addCustomProperty(page, infoModal, 'checkbox');
+  await addCustomProperty(page, infoModal, 'createdBy');
+  await addCustomProperty(page, infoModal, 'updatedBy');
 });

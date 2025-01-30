@@ -3,42 +3,58 @@ import {
   AIImageBlockSpec,
   AIParagraphBlockSpec,
 } from '@affine/core/blocksuite/presets/ai';
-import type { BlockSpec } from '@blocksuite/block-std';
+import { AIChatBlockSpec } from '@affine/core/blocksuite/presets/blocks/ai-chat-block';
 import {
+  AdapterFactoryExtensions,
+  AttachmentBlockSpec,
   BookmarkBlockSpec,
+  CodeBlockSpec,
   DatabaseBlockSpec,
   DataViewBlockSpec,
+  DefaultOpenDocExtension,
   DividerBlockSpec,
-  EmbedFigmaBlockSpec,
-  EmbedGithubBlockSpec,
-  EmbedHtmlBlockSpec,
-  EmbedLinkedDocBlockSpec,
-  EmbedLoomBlockSpec,
-  EmbedSyncedDocBlockSpec,
-  EmbedYoutubeBlockSpec,
+  EditPropsStore,
+  EmbedExtensions,
+  FontLoaderService,
+  ImageBlockSpec,
+  LatexBlockSpec,
   ListBlockSpec,
-  NoteBlockSpec,
-} from '@blocksuite/blocks';
+  ParagraphBlockSpec,
+  RefNodeSlotsExtension,
+  RichTextExtensions,
+  TableBlockSpec,
+} from '@blocksuite/affine/blocks';
+import type { ExtensionType } from '@blocksuite/affine/store';
 
-import { CustomAttachmentBlockSpec } from './custom/attachment-block';
-
-export const CommonBlockSpecs: BlockSpec[] = [
+const CommonBlockSpecs: ExtensionType[] = [
+  RefNodeSlotsExtension,
+  EditPropsStore,
+  RichTextExtensions,
+  LatexBlockSpec,
   ListBlockSpec,
-  NoteBlockSpec,
   DatabaseBlockSpec,
+  TableBlockSpec,
   DataViewBlockSpec,
   DividerBlockSpec,
+  EmbedExtensions,
   BookmarkBlockSpec,
-  EmbedFigmaBlockSpec,
-  EmbedGithubBlockSpec,
-  EmbedYoutubeBlockSpec,
-  EmbedLoomBlockSpec,
-  EmbedHtmlBlockSpec,
-  EmbedSyncedDocBlockSpec,
-  EmbedLinkedDocBlockSpec,
-  // special
-  CustomAttachmentBlockSpec,
+  AttachmentBlockSpec,
+  AdapterFactoryExtensions,
+  FontLoaderService,
+  DefaultOpenDocExtension,
+].flat();
+
+export const DefaultBlockSpecs: ExtensionType[] = [
+  CodeBlockSpec,
+  ImageBlockSpec,
+  ParagraphBlockSpec,
+  ...CommonBlockSpecs,
+].flat();
+
+export const AIBlockSpecs: ExtensionType[] = [
   AICodeBlockSpec,
   AIImageBlockSpec,
   AIParagraphBlockSpec,
-];
+  AIChatBlockSpec,
+  ...CommonBlockSpecs,
+].flat();

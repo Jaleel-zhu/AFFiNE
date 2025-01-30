@@ -1,106 +1,18 @@
 import { cssVar } from '@toeverything/theme';
-import {
-  createVar,
-  generateIdentifier,
-  globalStyle,
-  keyframes,
-  style,
-} from '@vanilla-extract/css';
-
-export const animationTimeout = createVar();
-export const transformOrigin = createVar();
-export const animationType = createVar();
-
-const zoomIn = keyframes({
-  from: {
-    transform: 'scale(0.10)',
-  },
-  to: {
-    transform: 'scale(1)',
-  },
-});
-const zoomOut = keyframes({
-  to: {
-    opacity: 0,
-    transform: 'scale(0.10)',
-  },
-  from: {
-    opacity: 1,
-    transform: 'scale(1)',
-  },
-});
-
-const fadeIn = keyframes({
-  from: {
-    opacity: 0,
-  },
-  to: {
-    opacity: 1,
-  },
-});
-
-const fadeOut = keyframes({
-  from: {
-    opacity: 1,
-  },
-  to: {
-    opacity: 0,
-  },
-});
-
-// every item must have its own unique view-transition-name
-const vtContentZoom = generateIdentifier('content-zoom');
-const vtContentFade = generateIdentifier('content-fade');
-const vtOverlayFade = generateIdentifier('content-fade');
-
-globalStyle(`::view-transition-group(${vtOverlayFade})`, {
-  animationDuration: animationTimeout,
-});
-
-globalStyle(`::view-transition-new(${vtOverlayFade})`, {
-  animationName: fadeIn,
-});
-
-globalStyle(`::view-transition-old(${vtOverlayFade})`, {
-  animationName: fadeOut,
-});
-
-globalStyle(
-  `::view-transition-group(${vtContentZoom}),
-   ::view-transition-group(${vtContentFade})`,
-  {
-    animationDuration: animationTimeout,
-    animationFillMode: 'forwards',
-    animationTimingFunction: 'cubic-bezier(0.42, 0, 0.58, 1)',
-  }
-);
-
-globalStyle(`::view-transition-new(${vtContentZoom})`, {
-  animationName: zoomIn,
-  // origin has to be set in ::view-transition-new/old
-  transformOrigin: transformOrigin,
-});
-
-globalStyle(`::view-transition-old(${vtContentZoom})`, {
-  animationName: zoomOut,
-  transformOrigin: transformOrigin,
-});
-
-globalStyle(`::view-transition-new(${vtContentFade})`, {
-  animationName: fadeIn,
-});
-
-globalStyle(`::view-transition-old(${vtContentFade})`, {
-  animationName: fadeOut,
-});
+import { cssVarV2 } from '@toeverything/theme/v2';
+import { style } from '@vanilla-extract/css';
 
 export const modalOverlay = style({
   position: 'fixed',
   inset: 0,
   zIndex: cssVar('zIndexModal'),
-  backgroundColor: cssVar('black30'),
-  viewTransitionName: vtOverlayFade,
+  backgroundColor: cssVarV2('layer/background/modal'),
   pointerEvents: 'auto',
+  selectors: {
+    '&[data-anime-state="animating"]': {
+      opacity: 0,
+    },
+  },
 });
 
 export const modalContentWrapper = style({
@@ -113,32 +25,69 @@ export const modalContentWrapper = style({
 });
 
 export const modalContentContainer = style({
+  position: 'relative',
   display: 'flex',
-  alignItems: 'flex-start',
+  alignItems: 'center',
+  justifyContent: 'center',
+  borderRadius: 12,
+  '@media': {
+    // for small screen
+    'screen and (width <= 640px)': {
+      selectors: {
+        [`${modalContentWrapper}:is([data-mode="max"], [data-mode="fit"]) &`]: {
+          height: '80%',
+          width: 'calc(100% - 32px)',
+          paddingRight: 0,
+          paddingBottom: 32,
+          alignSelf: 'flex-end',
+        },
+      },
+    },
+    'screen and (width > 640px) and (width <= 1024px)': {
+      selectors: {
+        [`${modalContentWrapper}[data-mode="fit"] &`]: {
+          paddingRight: 12,
+        },
+      },
+    },
+  },
+  selectors: {
+    [`${modalContentWrapper}[data-mode="max"] &`]: {
+      width: 'calc(100% - 64px)',
+      height: 'calc(100% - 64px)',
+    },
+    [`${modalContentWrapper}[data-mode="full"] &`]: {
+      width: '100%',
+      height: '100%',
+    },
+    [`${modalContentWrapper}[data-mode="fit"] &`]: {
+      width: '90%',
+      height: '90%',
+      maxWidth: 1248,
+    },
+    '&[data-anime-state="animating"]': {
+      opacity: 0,
+    },
+  },
+});
+export const modalContentClip = style({
   width: '100%',
   height: '100%',
+  borderRadius: 'inherit',
+  overflow: 'hidden',
 });
 
-export const modalContentContainerWithZoom = style({
-  viewTransitionName: vtContentZoom,
-});
-
-export const modalContentContainerWithFade = style({
-  viewTransitionName: vtContentFade,
-});
-
-export const containerPadding = style({
-  width: '90%',
-  height: '90%',
-  maxWidth: 1248,
+export const dialog = style({
+  backgroundColor: cssVar('backgroundOverlayPanelColor'),
+  boxShadow: cssVar('shadow3'),
 });
 
 export const modalContent = style({
-  flex: 1,
+  borderRadius: 'inherit',
+  width: '100%',
   height: '100%',
-  backgroundColor: cssVar('backgroundOverlayPanelColor'),
-  backdropFilter: 'drop-shadow(0px 0px 2px rgba(0, 0, 0, 0.08))',
-  borderRadius: '8px',
+  flexShrink: 0,
+  overflow: 'hidden',
   minHeight: 300,
   // :focus-visible will set outline
   outline: 'none',
@@ -151,9 +100,22 @@ export const modalContent = style({
 });
 
 export const modalControls = style({
-  flexShrink: 0,
+  position: 'absolute',
+  right: -48,
+  top: 0,
   zIndex: -1,
   minWidth: '48px',
   padding: '8px 0 0 16px',
   pointerEvents: 'auto',
+  '@media': {
+    'screen and (width <= 640px)': {
+      top: -48,
+      right: 0,
+      left: 0,
+      padding: '8px',
+    },
+    'screen and (width > 640px) and (width <= 1024px)': {
+      paddingLeft: 0,
+    },
+  },
 });

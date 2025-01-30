@@ -12,24 +12,15 @@ import {
 import { RuntimeConfig, RuntimeConfigType } from '@prisma/client';
 import { GraphQLJSON, GraphQLJSONObject } from 'graphql-scalars';
 
-import { Config, DeploymentType, URLHelper } from '../../fundamentals';
+import { Config, Runtime, URLHelper } from '../../base';
 import { Public } from '../auth';
 import { Admin } from '../common';
+import { FeatureType } from '../features';
+import { AvailableUserFeatureConfig } from '../features/resolver';
 import { ServerFlags } from './config';
-import { ServerFeature } from './types';
-
-const ENABLED_FEATURES: Set<ServerFeature> = new Set();
-export function ADD_ENABLED_FEATURES(feature: ServerFeature) {
-  ENABLED_FEATURES.add(feature);
-}
-
-registerEnumType(ServerFeature, {
-  name: 'ServerFeature',
-});
-
-registerEnumType(DeploymentType, {
-  name: 'ServerDeploymentType',
-});
+import { ENABLED_FEATURES } from './server-feature';
+import { ServerService } from './service';
+import { ServerConfigType } from './types';
 
 @ObjectType()
 export class PasswordLimitsType {
@@ -43,36 +34,6 @@ export class PasswordLimitsType {
 export class CredentialsRequirementType {
   @Field()
   password!: PasswordLimitsType;
-}
-
-@ObjectType()
-export class ServerConfigType {
-  @Field({
-    description:
-      'server identical name could be shown as badge on user interface',
-  })
-  name!: string;
-
-  @Field({ description: 'server version' })
-  version!: string;
-
-  @Field({ description: 'server base url' })
-  baseUrl!: string;
-
-  @Field(() => DeploymentType, { description: 'server type' })
-  type!: DeploymentType;
-
-  /**
-   * @deprecated
-   */
-  @Field({ description: 'server flavor', deprecationReason: 'use `features`' })
-  flavor!: string;
-
-  @Field(() => [ServerFeature], { description: 'enabled server features' })
-  features!: ServerFeature[];
-
-  @Field({ description: 'enable telemetry' })
-  enableTelemetry!: boolean;
 }
 
 registerEnumType(RuntimeConfigType, {
@@ -115,7 +76,9 @@ export class ServerFlagsType implements ServerFlags {
 export class ServerConfigResolver {
   constructor(
     private readonly config: Config,
-    private readonly url: URLHelper
+    private readonly runtime: Runtime,
+    private readonly url: URLHelper,
+    private readonly server: ServerService
   ) {}
 
   @Public()
@@ -141,7 +104,7 @@ export class ServerConfigResolver {
     description: 'credentials requirement',
   })
   async credentialsRequirement() {
-    const config = await this.config.runtime.fetchAll({
+    const config = await this.runtime.fetchAll({
       'auth/password.max': true,
       'auth/password.min': true,
     });
@@ -158,28 +121,79 @@ export class ServerConfigResolver {
     description: 'server flags',
   })
   async flags(): Promise<ServerFlagsType> {
-    const records = await this.config.runtime.list('flags');
+    const records = await this.runtime.list('flags');
 
     return records.reduce((flags, record) => {
       flags[record.key as keyof ServerFlagsType] = record.value as any;
       return flags;
     }, {} as ServerFlagsType);
   }
+
+  @ResolveField(() => Boolean, {
+    description: 'whether server has been initialized',
+  })
+  async initialized() {
+    return this.server.initialized();
+  }
 }
 
+@Resolver(() => ServerConfigType)
+export class ServerFeatureConfigResolver extends AvailableUserFeatureConfig {
+  constructor(config: Config) {
+    super(config);
+  }
+
+  @ResolveField(() => [FeatureType], {
+    description: 'Features for user that can be configured',
+  })
+  override availableUserFeatures() {
+    return super.availableUserFeatures();
+  }
+}
+
+@ObjectType()
+class ServerServiceConfig {
+  @Field()
+  name!: string;
+
+  @Field(() => GraphQLJSONObject)
+  config!: any;
+}
+
+interface ServerServeConfig {
+  https: boolean;
+  host: string;
+  port: number;
+  externalUrl: string;
+}
+
+interface ServerMailerConfig {
+  host?: string | null;
+  port?: number | null;
+  secure?: boolean | null;
+  service?: string | null;
+  sender?: string | null;
+}
+
+interface ServerDatabaseConfig {
+  host: string;
+  port: number;
+  user?: string | null;
+  database: string;
+}
+
+@Admin()
 @Resolver(() => ServerRuntimeConfigType)
 export class ServerRuntimeConfigResolver {
-  constructor(private readonly config: Config) {}
+  constructor(private readonly runtime: Runtime) {}
 
-  @Admin()
   @Query(() => [ServerRuntimeConfigType], {
     description: 'get all server runtime configurable settings',
   })
   serverRuntimeConfig(): Promise<ServerRuntimeConfigType[]> {
-    return this.config.runtime.list();
+    return this.runtime.list();
   }
 
-  @Admin()
   @Mutation(() => ServerRuntimeConfigType, {
     description: 'update server runtime configurable setting',
   })
@@ -187,10 +201,9 @@ export class ServerRuntimeConfigResolver {
     @Args('id') id: string,
     @Args({ type: () => GraphQLJSON, name: 'value' }) value: any
   ): Promise<ServerRuntimeConfigType> {
-    return await this.config.runtime.set(id as any, value);
+    return await this.runtime.set(id as any, value);
   }
 
-  @Admin()
   @Mutation(() => [ServerRuntimeConfigType], {
     description: 'update multiple server runtime configurable settings',
   })
@@ -199,9 +212,63 @@ export class ServerRuntimeConfigResolver {
   ): Promise<ServerRuntimeConfigType[]> {
     const keys = Object.keys(updates);
     const results = await Promise.all(
-      keys.map(key => this.config.runtime.set(key as any, updates[key]))
+      keys.map(key => this.runtime.set(key as any, updates[key]))
     );
 
     return results;
+  }
+}
+
+@Admin()
+@Resolver(() => ServerServiceConfig)
+export class ServerServiceConfigResolver {
+  constructor(private readonly config: Config) {}
+
+  @Query(() => [ServerServiceConfig])
+  serverServiceConfigs() {
+    return [
+      {
+        name: 'server',
+        config: this.serve(),
+      },
+      {
+        name: 'mailer',
+        config: this.mail(),
+      },
+      {
+        name: 'database',
+        config: this.database(),
+      },
+    ];
+  }
+
+  serve(): ServerServeConfig {
+    return this.config.server;
+  }
+
+  mail(): ServerMailerConfig {
+    const sender =
+      typeof this.config.mailer.from === 'string'
+        ? this.config.mailer.from
+        : this.config.mailer.from?.address;
+
+    return {
+      host: this.config.mailer.host,
+      port: this.config.mailer.port,
+      secure: this.config.mailer.secure,
+      service: this.config.mailer.service,
+      sender,
+    };
+  }
+
+  database(): ServerDatabaseConfig {
+    const url = new URL(this.config.prisma.datasourceUrl);
+
+    return {
+      host: url.hostname,
+      port: Number(url.port),
+      user: url.username,
+      database: url.pathname.slice(1) ?? url.username,
+    };
   }
 }

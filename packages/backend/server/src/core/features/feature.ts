@@ -1,4 +1,4 @@
-import { PrismaTransaction } from '../../fundamentals';
+import { PrismaTransaction } from '../../base';
 import { Feature, FeatureSchema, FeatureType } from './types';
 
 class FeatureConfig<T extends FeatureType> {
@@ -32,7 +32,7 @@ export async function getFeature(prisma: PrismaTransaction, featureId: number) {
     return cachedFeature;
   }
 
-  const feature = await prisma.features.findFirst({
+  const feature = await prisma.feature.findFirst({
     where: {
       id: featureId,
     },

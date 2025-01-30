@@ -15,11 +15,15 @@ import {
   ExpectToPublishPage,
   ExpectToRevokePublicPage,
   PageIsNotPublic,
-} from '../../../fundamentals';
+} from '../../../base';
 import { CurrentUser } from '../../auth';
+import {
+  Permission,
+  PermissionService,
+  PublicPageMode,
+} from '../../permission';
 import { DocID } from '../../utils/doc';
-import { PermissionService, PublicPageMode } from '../permission';
-import { Permission, WorkspaceType } from '../types';
+import { WorkspaceType } from '../types';
 
 registerEnumType(PublicPageMode, {
   name: 'PublicPageMode',
@@ -136,7 +140,7 @@ export class PagePermissionResolver {
     await this.permission.checkWorkspace(
       docId.workspace,
       user.id,
-      Permission.Read
+      Permission.Write
     );
 
     return this.permission.publishPage(docId.workspace, docId.guid, mode);
@@ -173,7 +177,7 @@ export class PagePermissionResolver {
     await this.permission.checkWorkspace(
       docId.workspace,
       user.id,
-      Permission.Read
+      Permission.Write
     );
 
     const isPublic = await this.permission.isPublicPage(

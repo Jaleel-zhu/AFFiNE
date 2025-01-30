@@ -1,134 +1,154 @@
+import { useRefEffect } from '@affine/component';
 import { EditorLoading } from '@affine/component/page-detail-skeleton';
-import { assertExists } from '@blocksuite/global/utils';
-import type { AffineEditorContainer } from '@blocksuite/presets';
-import type { Doc } from '@blocksuite/store';
-import { use } from 'foxact/use';
-import type { CSSProperties, ReactElement } from 'react';
+import { ServerService } from '@affine/core/modules/cloud';
 import {
-  forwardRef,
-  memo,
-  Suspense,
-  useCallback,
-  useEffect,
-  useRef,
-} from 'react';
+  customImageProxyMiddleware,
+  type DocMode,
+  ImageProxyService,
+  LinkPreviewerService,
+} from '@blocksuite/affine/blocks';
+import { DisposableGroup } from '@blocksuite/affine/global/utils';
+import type { AffineEditorContainer } from '@blocksuite/affine/presets';
+import type { Store } from '@blocksuite/affine/store';
+import { useService } from '@toeverything/infra';
+import type { CSSProperties } from 'react';
+import { useEffect, useState } from 'react';
 
+import type { DefaultOpenProperty } from '../../doc-properties';
 import { BlocksuiteEditorContainer } from './blocksuite-editor-container';
 import { NoPageRootError } from './no-page-error';
 
-export type ErrorBoundaryProps = {
-  onReset?: () => void;
-};
-
 export type EditorProps = {
-  page: Doc;
-  mode: 'page' | 'edgeless';
+  page: Store;
+  mode: DocMode;
   shared?: boolean;
-  defaultSelectedBlockId?: string;
-  // on Editor instance instantiated
-  onLoadEditor?: (editor: AffineEditorContainer) => () => void;
+  defaultOpenProperty?: DefaultOpenProperty;
+  // on Editor ready
+  onEditorReady?: (editor: AffineEditorContainer) => (() => void) | void;
   style?: CSSProperties;
   className?: string;
 };
 
-function usePageRoot(page: Doc) {
-  if (!page.ready) {
-    page.load();
-  }
-
-  if (!page.root) {
-    use(
-      new Promise<void>((resolve, reject) => {
-        const disposable = page.slots.rootAdded.once(() => {
-          resolve();
-        });
-        window.setTimeout(() => {
-          disposable.dispose();
-          reject(new NoPageRootError(page));
-        }, 20 * 1000);
-      })
-    );
-  }
-
-  return page.root;
-}
-
-const BlockSuiteEditorImpl = forwardRef<AffineEditorContainer, EditorProps>(
-  function BlockSuiteEditorImpl(
-    {
-      mode,
-      page,
-      className,
-      defaultSelectedBlockId,
-      onLoadEditor,
-      shared,
-      style,
-    },
-    ref
-  ) {
-    usePageRoot(page);
-    assertExists(page, 'page should not be null');
-    const editorDisposeRef = useRef<() => void>(() => {});
-    const editorRef = useRef<AffineEditorContainer | null>(null);
-
-    const onRefChange = useCallback(
-      (editor: AffineEditorContainer | null) => {
-        editorRef.current = editor;
-        if (ref) {
-          if (typeof ref === 'function') {
-            ref(editor);
-          } else {
-            ref.current = editor;
-          }
-        }
-        if (editor && onLoadEditor) {
-          editorDisposeRef.current = onLoadEditor(editor);
-        }
-      },
-      [onLoadEditor, ref]
-    );
-
-    useEffect(() => {
-      const disposable = page.slots.blockUpdated.once(() => {
-        page.collection.setDocMeta(page.id, {
-          updatedDate: Date.now(),
-        });
+const BlockSuiteEditorImpl = ({
+  mode,
+  page,
+  className,
+  shared,
+  style,
+  onEditorReady,
+  defaultOpenProperty,
+}: EditorProps) => {
+  useEffect(() => {
+    const disposable = page.slots.blockUpdated.once(() => {
+      page.workspace.meta.setDocMeta(page.id, {
+        updatedDate: Date.now(),
       });
+    });
+    return () => {
+      disposable.dispose();
+    };
+  }, [page]);
+
+  const server = useService(ServerService).server;
+
+  const editorRef = useRefEffect(
+    (editor: AffineEditorContainer) => {
+      globalThis.currentEditor = editor;
+      let canceled = false;
+      const disposableGroup = new DisposableGroup();
+
+      if (onEditorReady) {
+        // Invoke onLoad once the editor has been mounted to the DOM.
+        editor.updateComplete
+          .then(() => {
+            if (canceled) {
+              return;
+            }
+            // host should be ready
+
+            // provide image proxy endpoint to blocksuite
+            const imageProxyUrl = new URL(
+              BUILD_CONFIG.imageProxyUrl,
+              server.baseUrl
+            ).toString();
+            const linkPreviewUrl = new URL(
+              BUILD_CONFIG.linkPreviewUrl,
+              server.baseUrl
+            ).toString();
+
+            editor.host?.std.clipboard.use(
+              customImageProxyMiddleware(imageProxyUrl)
+            );
+
+            page.get(LinkPreviewerService).setEndpoint(linkPreviewUrl);
+
+            page.get(ImageProxyService).setImageProxyURL(imageProxyUrl);
+
+            return editor.host?.updateComplete;
+          })
+          .then(() => {
+            if (canceled) {
+              return;
+            }
+            const dispose = onEditorReady(editor);
+            if (dispose) {
+              disposableGroup.add(dispose);
+            }
+          })
+          .catch(console.error);
+      }
+
       return () => {
-        disposable.dispose();
+        canceled = true;
+        disposableGroup.dispose();
       };
-    }, [page]);
+    },
+    [onEditorReady, page, server]
+  );
 
-    useEffect(() => {
-      return () => {
-        editorDisposeRef.current();
-      };
-    }, []);
+  return (
+    <BlocksuiteEditorContainer
+      mode={mode}
+      page={page}
+      shared={shared}
+      defaultOpenProperty={defaultOpenProperty}
+      ref={editorRef}
+      className={className}
+      style={style}
+    />
+  );
+};
 
-    return (
-      <BlocksuiteEditorContainer
-        mode={mode}
-        page={page}
-        shared={shared}
-        ref={onRefChange}
-        className={className}
-        style={style}
-        defaultSelectedBlockId={defaultSelectedBlockId}
-      />
-    );
-  }
-);
+export const BlockSuiteEditor = (props: EditorProps) => {
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
 
-export const BlockSuiteEditor = memo(
-  forwardRef<AffineEditorContainer, EditorProps>(
-    function BlockSuiteEditor(props, ref): ReactElement {
-      return (
-        <Suspense fallback={<EditorLoading />}>
-          <BlockSuiteEditorImpl key={props.page.id} ref={ref} {...props} />
-        </Suspense>
-      );
+  useEffect(() => {
+    if (props.page.root) {
+      setIsLoading(false);
+      return;
     }
-  )
-);
+    const timer = setTimeout(() => {
+      disposable.dispose();
+      setError(new NoPageRootError(props.page));
+    }, 20 * 1000);
+    const disposable = props.page.slots.rootAdded.once(() => {
+      setIsLoading(false);
+      clearTimeout(timer);
+    });
+    return () => {
+      disposable.dispose();
+      clearTimeout(timer);
+    };
+  }, [props.page]);
 
-BlockSuiteEditor.displayName = 'BlockSuiteEditor';
+  if (error) {
+    throw error;
+  }
+
+  return isLoading ? (
+    <EditorLoading />
+  ) : (
+    <BlockSuiteEditorImpl key={props.page.id} {...props} />
+  );
+};

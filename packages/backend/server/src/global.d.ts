@@ -1,7 +1,6 @@
 declare namespace Express {
   interface Request {
-    user?: import('./core/auth/current-user').CurrentUser;
-    sid?: string;
+    session?: import('./core/auth/session').Session;
   }
 }
 

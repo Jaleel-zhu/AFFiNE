@@ -1,20 +1,41 @@
-import type { BlockSpec } from '@blocksuite/block-std';
+import { createAIEdgelessRootBlockSpec } from '@affine/core/blocksuite/presets/ai';
+import { FeatureFlagService } from '@affine/core/modules/feature-flag';
+import { builtInTemplates as builtInEdgelessTemplates } from '@affine/templates/edgeless';
+import { builtInTemplates as builtInStickersTemplates } from '@affine/templates/stickers';
+import type { TemplateManager } from '@blocksuite/affine/blocks';
 import {
-  EdgelessSurfaceBlockSpec,
-  EdgelessSurfaceRefBlockSpec,
-  EdgelessTextBlockSpec,
-  FrameBlockSpec,
-} from '@blocksuite/blocks';
+  EdgelessRootBlockSpec,
+  EdgelessTemplatePanel,
+  SpecProvider,
+} from '@blocksuite/affine/blocks';
+import type { ExtensionType } from '@blocksuite/affine/store';
+import { type FrameworkProvider } from '@toeverything/infra';
 
-import { CommonBlockSpecs } from './common';
-import { CustomEdgelessRootBlockSpec } from './custom/root-block';
+import { enableAffineExtension, enableAIExtension } from './custom/root-block';
 
-export const EdgelessModeSpecs: BlockSpec[] = [
-  ...CommonBlockSpecs,
-  EdgelessSurfaceBlockSpec,
-  EdgelessSurfaceRefBlockSpec,
-  FrameBlockSpec,
-  EdgelessTextBlockSpec,
-  // special
-  CustomEdgelessRootBlockSpec,
-];
+export function createEdgelessModeSpecs(
+  framework: FrameworkProvider
+): ExtensionType[] {
+  const featureFlagService = framework.get(FeatureFlagService);
+  const enableAI = featureFlagService.flags.enable_ai.value;
+  const edgelessSpec = SpecProvider.getInstance().getSpec('edgeless');
+  enableAffineExtension(framework, edgelessSpec);
+  if (enableAI) {
+    enableAIExtension(edgelessSpec);
+    edgelessSpec.replace(
+      EdgelessRootBlockSpec,
+      createAIEdgelessRootBlockSpec(framework)
+    );
+  }
+
+  return edgelessSpec.value;
+}
+
+export function effects() {
+  EdgelessTemplatePanel.templates.extend(
+    builtInStickersTemplates as TemplateManager
+  );
+  EdgelessTemplatePanel.templates.extend(
+    builtInEdgelessTemplates as TemplateManager
+  );
+}

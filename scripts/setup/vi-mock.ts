@@ -4,36 +4,27 @@ vi.mock('lottie-web', () => ({
   default: {},
 }));
 
-vi.mock('@blocksuite/presets', () => ({
+vi.mock('@blocksuite/affine/presets', () => ({
   AffineEditorContainer: vi.fn(),
   BiDirectionalLinkPanel: vi.fn(),
   DocMetaTags: vi.fn(),
   DocTitle: vi.fn(),
   EdgelessEditor: vi.fn(),
   PageEditor: vi.fn(),
-}));
-
-vi.mock('@blocksuite/presets/ai', () => ({
-  AIProvider: {
-    slots: new Proxy(
-      {},
-      {
-        get: () => ({
-          on: vi.fn(),
-        }),
-      }
-    ),
-    provide: vi.fn(),
+  AIChatBlockSchema: {
+    version: 1,
+    model: {
+      version: 1,
+      flavour: 'affine:embed-ai-chat',
+      role: 'content',
+      children: [],
+    },
   },
-  AIEdgelessRootBlockSpec: {},
-  AICodeBlockSpec: {},
-  AIImageBlockSpec: {},
-  AIParagraphBlockSpec: {},
-  AIPageRootBlockSpec: {},
+  AIChatBlockSpec: {},
 }));
 
 if (typeof window !== 'undefined' && HTMLCanvasElement) {
-  // @ts-expect-error
+  // @ts-expect-error allow vitest global mock
   HTMLCanvasElement.prototype.getContext = () => {
     return {
       fillRect: vi.fn(),

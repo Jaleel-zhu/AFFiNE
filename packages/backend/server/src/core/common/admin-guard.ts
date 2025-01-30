@@ -6,11 +6,8 @@ import type {
 import { Injectable, UseGuards } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 
-import {
-  ActionForbidden,
-  getRequestResponseFromContext,
-} from '../../fundamentals';
-import { FeatureManagementService } from '../features';
+import { ActionForbidden, getRequestResponseFromContext } from '../../base';
+import { FeatureManagementService } from '../features/management';
 
 @Injectable()
 export class AdminGuard implements CanActivate, OnModuleInit {
@@ -25,8 +22,8 @@ export class AdminGuard implements CanActivate, OnModuleInit {
   async canActivate(context: ExecutionContext) {
     const { req } = getRequestResponseFromContext(context);
     let allow = false;
-    if (req.user) {
-      allow = await this.feature.isAdmin(req.user.id);
+    if (req.session) {
+      allow = await this.feature.isAdmin(req.session.user.id);
     }
 
     if (!allow) {

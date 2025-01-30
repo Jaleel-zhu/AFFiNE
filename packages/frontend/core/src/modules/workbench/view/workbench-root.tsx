@@ -1,5 +1,7 @@
 import { ResizePanel } from '@affine/component/resize-panel';
-import { rightSidebarWidthAtom } from '@affine/core/atoms';
+import { AffineErrorComponent } from '@affine/core/components/affine/affine-error-boundary/affine-error-fallback';
+import { rightSidebarWidthAtom } from '@affine/core/components/atoms';
+import { workbenchRoutes } from '@affine/core/desktop/workbench-router';
 import {
   appSettingAtom,
   FrameworkScope,
@@ -8,21 +10,30 @@ import {
 } from '@toeverything/infra';
 import { useAtom, useAtomValue } from 'jotai';
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { type RouteObject, useLocation } from 'react-router-dom';
 
 import type { View } from '../entities/view';
 import { WorkbenchService } from '../services/workbench';
 import { useBindWorkbenchToBrowserRouter } from './browser-adapter';
 import { useBindWorkbenchToDesktopRouter } from './desktop-adapter';
+import { RouteContainer } from './route-container';
 import { SidebarContainer } from './sidebar/sidebar-container';
 import { SplitView } from './split-view/split-view';
 import { ViewIslandRegistryProvider } from './view-islands';
 import { ViewRoot } from './view-root';
 import * as styles from './workbench-root.css';
 
-const useAdapter = environment.isDesktop
+const useAdapter = BUILD_CONFIG.isElectron
   ? useBindWorkbenchToDesktopRouter
   : useBindWorkbenchToBrowserRouter;
+
+const routes: RouteObject[] = [
+  {
+    element: <RouteContainer />,
+    errorElement: <AffineErrorComponent />,
+    children: workbenchRoutes,
+  },
+];
 
 export const WorkbenchRoot = memo(() => {
   const workbench = useService(WorkbenchService).workbench;
@@ -37,8 +48,8 @@ export const WorkbenchRoot = memo(() => {
 
   useAdapter(workbench, basename);
 
-  const panelRenderer = useCallback((view: View, index: number) => {
-    return <WorkbenchView key={view.id} view={view} index={index} />;
+  const panelRenderer = useCallback((view: View) => {
+    return <WorkbenchView view={view} />;
   }, []);
 
   const onMove = useCallback(
@@ -49,8 +60,8 @@ export const WorkbenchRoot = memo(() => {
   );
 
   useEffect(() => {
-    workbench.basename$.next(basename);
-  }, [basename, workbench.basename$]);
+    workbench.updateBasename(basename);
+  }, [basename, workbench]);
 
   return (
     <ViewIslandRegistryProvider>
@@ -67,12 +78,12 @@ export const WorkbenchRoot = memo(() => {
 
 WorkbenchRoot.displayName = 'memo(WorkbenchRoot)';
 
-const WorkbenchView = ({ view, index }: { view: View; index: number }) => {
+const WorkbenchView = ({ view }: { view: View }) => {
   const workbench = useService(WorkbenchService).workbench;
 
   const handleOnFocus = useCallback(() => {
-    workbench.active(index);
-  }, [workbench, index]);
+    workbench.active(view);
+  }, [workbench, view]);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -93,7 +104,7 @@ const WorkbenchView = ({ view, index }: { view: View; index: number }) => {
 
   return (
     <div className={styles.workbenchViewContainer} ref={containerRef}>
-      <ViewRoot key={view.id} view={view} />
+      <ViewRoot routes={routes} key={view.id} view={view} />
     </div>
   );
 };
@@ -138,7 +149,7 @@ const WorkbenchSidebar = () => {
     <ResizePanel
       floating={floating}
       resizeHandlePos="left"
-      resizeHandleOffset={clientBorder ? 3.5 : 0}
+      resizeHandleOffset={clientBorder && sidebarOpen ? 3 : 0}
       width={width}
       resizing={resizing}
       onResizing={setResizing}

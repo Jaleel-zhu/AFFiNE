@@ -1,26 +1,25 @@
-import type {
-  AffineAIPanelWidget,
-  AffineSlashMenuActionItem,
-  AffineSlashMenuContext,
-  AffineSlashMenuItem,
-  AffineSlashSubMenu,
-  AIItemConfig,
-} from '@blocksuite/blocks';
 import {
   AFFINE_AI_PANEL_WIDGET,
+  type AffineAIPanelWidget,
+  type AffineSlashMenuActionItem,
+  type AffineSlashMenuContext,
+  type AffineSlashMenuItem,
   AffineSlashMenuWidget,
+  type AffineSlashSubMenu,
+  type AIItemConfig,
   AIStarIcon,
+  DocModeProvider,
   MoreHorizontalIcon,
-} from '@blocksuite/blocks';
-import { assertExists } from '@blocksuite/global/utils';
+} from '@blocksuite/affine/blocks';
+import { assertExists } from '@blocksuite/affine/global/utils';
 import { html } from 'lit';
 
-import { AIItemGroups } from '../../_common/config';
+import { pageAIGroups } from '../../_common/config';
 import { handleInlineAskAIAction } from '../../actions/doc-handler';
 import { AIProvider } from '../../provider';
 
-export function setupSlashMenuEntry(slashMenu: AffineSlashMenuWidget) {
-  const AIItems = AIItemGroups.map(group => group.items).flat();
+export function setupSlashMenuAIEntry(slashMenu: AffineSlashMenuWidget) {
+  const AIItems = pageAIGroups.map(group => group.items).flat();
 
   const iconWrapper = (icon: AIItemConfig['icon']) => {
     return html`<div style="color: var(--affine-primary-color)">
@@ -30,27 +29,26 @@ export function setupSlashMenuEntry(slashMenu: AffineSlashMenuWidget) {
 
   const showWhenWrapper =
     (item?: AIItemConfig) =>
-    ({ rootElement }: AffineSlashMenuContext) => {
-      const affineAIPanelWidget = rootElement.host.view.getWidget(
+    ({ rootComponent }: AffineSlashMenuContext) => {
+      const affineAIPanelWidget = rootComponent.host.view.getWidget(
         AFFINE_AI_PANEL_WIDGET,
-        rootElement.model.id
+        rootComponent.model.id
       );
       if (affineAIPanelWidget === null) return false;
 
-      const chain = rootElement.host.command.chain();
-      const editorMode = rootElement.service.docModeService.getMode(
-        rootElement.doc.id
-      );
+      const chain = rootComponent.host.command.chain();
+      const docModeService = rootComponent.std.get(DocModeProvider);
+      const editorMode = docModeService.getPrimaryMode(rootComponent.doc.id);
 
-      return item?.showWhen?.(chain, editorMode, rootElement.host) ?? true;
+      return item?.showWhen?.(chain, editorMode, rootComponent.host) ?? true;
     };
 
   const actionItemWrapper = (
     item: AIItemConfig
   ): AffineSlashMenuActionItem => ({
     ...basicItemConfig(item),
-    action: ({ rootElement }: AffineSlashMenuContext) => {
-      item?.handler?.(rootElement.host);
+    action: ({ rootComponent }: AffineSlashMenuContext) => {
+      item?.handler?.(rootComponent.host);
     },
   });
 
@@ -61,7 +59,7 @@ export function setupSlashMenuEntry(slashMenu: AffineSlashMenuWidget) {
       subMenu: item.subItem.map<AffineSlashMenuActionItem>(
         ({ type, handler }) => ({
           name: type,
-          action: ({ rootElement }) => handler?.(rootElement.host),
+          action: ({ rootComponent }) => handler?.(rootComponent.host),
         })
       ),
     };
@@ -81,11 +79,11 @@ export function setupSlashMenuEntry(slashMenu: AffineSlashMenuWidget) {
     name: 'Ask AI',
     icon: AIStarIcon,
     showWhen: showWhenWrapper(),
-    action: ({ rootElement }) => {
-      const view = rootElement.host.view;
+    action: ({ rootComponent }) => {
+      const view = rootComponent.host.view;
       const affineAIPanelWidget = view.getWidget(
         AFFINE_AI_PANEL_WIDGET,
-        rootElement.model.id
+        rootComponent.model.id
       ) as AffineAIPanelWidget;
       assertExists(affineAIPanelWidget);
       assertExists(AIProvider.actions.chat);

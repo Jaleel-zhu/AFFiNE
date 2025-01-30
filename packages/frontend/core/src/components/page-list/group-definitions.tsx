@@ -1,9 +1,9 @@
-import { FavoriteItemsAdapter } from '@affine/core/modules/properties';
+import { CompatibleFavoriteItemsAdapter } from '@affine/core/modules/favorite';
 import type { Tag } from '@affine/core/modules/tag';
 import { TagService } from '@affine/core/modules/tag';
 import { useI18n } from '@affine/i18n';
+import type { DocMeta } from '@blocksuite/affine/store';
 import { FavoritedIcon, FavoriteIcon } from '@blocksuite/icons/rc';
-import type { DocMeta } from '@blocksuite/store';
 import { LiveData, useLiveData, useService } from '@toeverything/infra';
 import { type ReactNode, useMemo } from 'react';
 
@@ -131,9 +131,9 @@ export const useTagGroupDefinitions = (): ItemGroupDefinition<ListItem>[] => {
   const sortedTagsLiveData$ = useMemo(
     () =>
       LiveData.computed(get =>
-        get(tagList.tags$).sort((a, b) =>
-          get(a.value$).localeCompare(get(b.value$))
-        )
+        get(tagList.tags$)
+          .slice()
+          .sort((a, b) => get(a.value$).localeCompare(get(b.value$)))
       ),
     [tagList.tags$]
   );
@@ -174,7 +174,7 @@ export const useFavoriteGroupDefinitions = <
   T extends ListItem,
 >(): ItemGroupDefinition<T>[] => {
   const t = useI18n();
-  const favAdapter = useService(FavoriteItemsAdapter);
+  const favAdapter = useService(CompatibleFavoriteItemsAdapter);
   const favourites = useLiveData(favAdapter.favorites$);
   return useMemo(
     () => [
